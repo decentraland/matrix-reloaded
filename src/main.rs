@@ -1,14 +1,20 @@
 use matrix_sdk::ruma::api::client::r0::account::register;
 use matrix_sdk::ruma::api::client::r0::room::create_room;
+use matrix_sdk::ruma::api::client::r0::uiaa::{AuthData, Dummy};
+use matrix_sdk::ruma::events::room::message::MessageEventContent;
+use matrix_sdk::ruma::events::AnyMessageEventContent;
+use matrix_sdk::ruma::{assign, RoomId};
 use matrix_sdk::{ruma::UserId, Client};
 use rand::Rng;
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const SERVER: &str = "matrix.decentraland.zone";
+const PASSWORD: &str = "asdfasdf";
 
 struct User {
-    id: String,
+    id: UserId,
     client: Client,
 }
 
@@ -16,36 +22,54 @@ impl User {
     pub async fn new(id: String) -> Result<Self, Box<dyn std::error::Error>> {
         // init client connection (register + login)
         let user_id = UserId::try_from(format!("@{id}:{SERVER}")).unwrap();
+
+        // in case we are testing against localhost or not https server, we need to setup test cfg, see `Client::homeserver_from_user_id`
         let client = Client::new_from_user_id(user_id.clone())
             .await
             .expect("Couldn't create new client");
 
-        let registration = register::Request::new();
-        client
-            .register(registration)
-            .await
-            .expect("Couldn't register new user {user_id}");
-        client
-            .login(user_id.localpart(), "password", None, None)
-            .await
-            .expect("Couldn't login new user {user_id}");
+        let req = assign!(register::Request::new(), {
+            username: Some(user_id.localpart()),
+            password: Some(PASSWORD),
+            auth: Some(AuthData::Dummy(Dummy::new()))
+        });
 
-        Ok(Self { id, client })
+        client.register(req).await.unwrap();
+        client
+            .login(user_id.localpart(), PASSWORD, None, None)
+            .await
+            .unwrap();
+
+        Ok(Self {
+            id: user_id,
+            client,
+        })
+    }
+
+    pub async fn send_message(&self, room_id: &RoomId) {
+        let content =
+            AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain("Hello world"));
+
+        self.client.room_send(room_id, content, None).await.unwrap();
     }
 }
 
 type Friendship = String;
 
-trait FriendshipFormat {
-    fn create(user_one: usize, user_two: usize) -> String;
+trait FriendshipID {
+    fn from_users(user_one: &User, user_two: &User) -> String;
 }
 
-impl FriendshipFormat for Friendship {
-    fn create(user_one: usize, user_two: usize) -> String {
+impl FriendshipID for Friendship {
+    fn from_users(user_one: &User, user_two: &User) -> String {
+        let user_one = user_one.id.localpart().to_string();
+        let user_two = user_two.id.localpart().to_string();
         let mut users = [user_one, user_two];
         users.sort_unstable();
+        let first = &users[0];
+        let second = &users[1];
 
-        format!("{:?}", users)
+        format!("@{first}-{second}:{SERVER}")
     }
 }
 
@@ -55,11 +79,6 @@ struct State {
 }
 
 impl State {
-    fn contains_friendship(&self, first_user: usize, second_user: usize) -> bool {
-        let friendship = Friendship::create(first_user, second_user);
-        self.friendships.contains(&friendship)
-    }
-
     pub fn new() -> Self {
         Self {
             friendships: vec![],
@@ -68,48 +87,56 @@ impl State {
     }
 
     pub async fn init_users(&mut self, user_count: usize) {
+        let timestamp = time_now();
+
         for i in 0..user_count {
-            let user = User::new(i.to_string()).await.unwrap();
+            let id = format!("user_{i}_{timestamp}");
+            let user = User::new(id).await.unwrap();
             self.users.insert(i, user);
         }
     }
 
     pub async fn init_friendships(&mut self, friendship_ratio: f32) {
         let amount_of_friendships = ((self.users.len() as f32) * friendship_ratio).ceil() as usize;
+        let amount_of_users = self.users.len();
 
         while self.friendships.len() < amount_of_friendships {
-            let random_user1 = rand::thread_rng().gen_range(0..=amount_of_friendships);
-            let random_user2 = rand::thread_rng().gen_range(0..=amount_of_friendships);
-
-            if random_user1 == random_user2
-                || (self.contains_friendship(random_user1, random_user2))
-            {
-                continue;
-            }
-
-            self.friendships
-                .push(Friendship::create(random_user1, random_user2));
+            let random_user1 = rand::thread_rng().gen_range(0..amount_of_users);
+            let random_user2 = rand::thread_rng().gen_range(0..amount_of_users);
 
             let user1 = self.users.get(&random_user1).unwrap();
             let user2 = self.users.get(&random_user2).unwrap();
 
+            let friendship = Friendship::from_users(user1, user2);
+
+            if self.friendships.contains(&friendship) {
+                continue;
+            }
+
+            self.friendships.push(friendship);
+
             let request = create_room::Request::new();
+
+            println!("Creating room ");
 
             let room_id_response = user1.client.create_room(request).await.unwrap();
 
-            user1
-                .client
-                .join_room_by_id(&room_id_response.room_id)
-                .await
-                .unwrap();
+            println!("Created room {}", &room_id_response.room_id);
 
-            user2
-                .client
-                .join_room_by_id(&room_id_response.room_id)
-                .await
-                .unwrap();
+            let room_id = room_id_response.room_id;
+
+            user1.client.join_room_by_id(&room_id).await.unwrap();
+            user2.client.join_room_by_id(&room_id).await.unwrap();
         }
     }
+}
+
+fn time_now() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time is valid")
+        .as_millis()
+        .to_string()
 }
 
 impl Display for State {
@@ -120,7 +147,7 @@ impl Display for State {
 
         println!("Listing friendships: ");
         for friendship in &self.friendships {
-            println!("{}", friendship);
+            println!("- {}", friendship);
         }
         Ok(())
     }
@@ -129,8 +156,10 @@ impl Display for State {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = State::new();
+
+    state.init_users(2).await;
+
     tokio::spawn(async move {
-        state.init_users(2).await;
         state.init_friendships(0.5).await;
 
         println!("Step 1: {}", state);
