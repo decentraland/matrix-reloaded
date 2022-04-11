@@ -1,16 +1,16 @@
 use friendship::{Friendship, FriendshipID};
-use matrix_sdk::ruma::{RoomId, UserId};
+use metrics::Metrics;
 use rand::Rng;
-use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 use time::time_now;
-use user::User;
+use user::{Synching, User};
 
 mod friendship;
+mod metrics;
 mod text;
 mod time;
 mod user;
@@ -24,8 +24,8 @@ pub struct Configuration {
 pub struct State {
     config: Configuration,
     friendships: Vec<Friendship>,
-    users: HashMap<usize, User>,
-    rooms: HashMap<UserId, Vec<RoomId>>,
+    users: Vec<User<Synching>>,
+    metrics: Arc<Mutex<Metrics>>,
 }
 
 impl Display for State {
@@ -37,6 +37,14 @@ impl Display for State {
         for friendship in &self.friendships {
             println!("- {}", friendship);
         }
+        let metrics = self.metrics.lock().unwrap();
+
+        println!("HTTP Errors count: {}", metrics.http_errors);
+        println!("Sent messages count: {}", metrics.sent_messages.len());
+        println!(
+            "Recevied messages count: {}",
+            metrics.received_messages.len()
+        );
 
         Ok(())
     }
@@ -47,12 +55,12 @@ impl State {
         Self {
             config,
             friendships: vec![],
-            users: HashMap::new(),
-            rooms: HashMap::new(),
+            users: vec![],
+            metrics: Arc::new(Mutex::new(Metrics::default())),
         }
     }
 
-    async fn init_users(&mut self, counter: &Arc<AtomicUsize>) {
+    async fn init_users(&mut self) {
         let timestamp = time_now();
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
@@ -64,36 +72,31 @@ impl State {
         let server = self.config.homeserver_url.clone();
         for i in users_iter {
             tasks.push(tokio::spawn({
-                let counter = counter.clone();
+                let metrics = self.metrics.clone();
                 let server = server.clone();
                 async move {
                     let id = format!("user_{i}_{timestamp}");
-                    let user = User::new(id, server).await;
-                    match user {
-                        Ok(user) => {
-                            user.register().await;
-                            user.login().await;
-                            user.sync(&counter).await;
-                            Ok((i, user))
+                    let user = User::new(id, server, metrics).await;
+
+                    if let Some(user) = user {
+                        if let Some(user) = user.register().await {
+                            if let Some(user) = user.login().await {
+                                log::info!("User is now synching: {}", user.id());
+                                return Some(user.sync().await);
+                            }
                         }
-                        Err(e) => Err(format!("Failed to create new user {} with error {}", i, e)),
                     }
+                    None
                 }
             }));
         }
 
-        for result in (futures::future::join_all(tasks).await)
+        for user in (futures::future::join_all(tasks).await)
             .into_iter()
             .flatten()
+            .flatten()
         {
-            match result {
-                Ok((i, user)) => {
-                    self.users.insert(i, user);
-                }
-                Err(e) => {
-                    log::info!("{e}")
-                }
-            }
+            self.users.push(user);
         }
     }
 
@@ -109,8 +112,8 @@ impl State {
                 continue;
             }
 
-            let user1 = self.users.get(&random_user1).unwrap();
-            let user2 = self.users.get(&random_user2).unwrap();
+            let user1 = &self.users[random_user1];
+            let user2 = &self.users[random_user2];
 
             let friendship = Friendship::from_users(user1, user2);
 
@@ -120,50 +123,23 @@ impl State {
 
             self.friendships.push(friendship);
 
-            let response = user1.create_room().await;
-            match response {
-                Ok(response) => {
-                    let room_id = response.room_id;
-                    user1.join_room(&room_id).await;
-                    user2.join_room(&room_id).await;
-                }
-                Err(e) => {
-                    // report error
-                }
+            let room_created = user1.create_room().await;
+            if let Some(room_id) = room_created {
+                self.users[random_user1].join_room(&room_id).await;
+                self.users[random_user2].join_room(&room_id).await;
+            } else {
+                log::info!("User {} couldn't create a room", user1.id());
             }
         }
     }
 
-    async fn send_messages(&mut self, counter: &Arc<AtomicUsize>) {
-        for user in self.users.values() {
-            if let Some(rooms) = self.rooms.get(&user.id()) {
-                for room_id in rooms {
-                    let counter_value = counter.load(Ordering::SeqCst) + 1;
-                    counter.store(counter_value, Ordering::SeqCst);
-                    log::info!("Current message counter: {}", counter_value);
-
-                    match user.send_message(room_id).await {
-                        Ok(_) => {}
-                        Err(e) => {
-                            // report send_message error
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    async fn wait_for_messages(&mut self, counter: &Arc<AtomicUsize>) {
-        loop {
-            let counter_value = counter.load(Ordering::SeqCst);
-            if counter_value == 0 {
-                break;
-            }
+    async fn act(&mut self) {
+        for user in &self.users {
+            user.act().await;
         }
     }
 
     pub async fn run(&mut self) {
-        let counter = Arc::new(AtomicUsize::new(0));
         for step in 1..=self.config.total_steps {
             let now = Instant::now();
             println!("Starting step {}", step);
@@ -172,7 +148,7 @@ impl State {
             print!("Initializing users...");
             io::stdout().flush().unwrap();
 
-            self.init_users(&counter.clone()).await;
+            self.init_users().await;
             println!("finished and took {} ms", timer.elapsed().as_millis());
 
             let timer = Instant::now();
@@ -181,17 +157,10 @@ impl State {
             self.init_friendships().await;
             println!("finished and took {} ms", timer.elapsed().as_millis());
 
-            let timer = Instant::now();
-            print!("Sending messages...");
-            io::stdout().flush().unwrap();
-            self.send_messages(&counter.clone()).await;
-            println!("finished and took {} ms", timer.elapsed().as_millis());
+            self.act().await;
 
-            let timer = Instant::now();
-            print!("Waiting for all messages to sync...");
-            io::stdout().flush().unwrap();
-            self.wait_for_messages(&counter.clone()).await;
-            println!("finished and took {} ms", timer.elapsed().as_millis());
+            let secs = Duration::from_secs(5);
+            thread::sleep(secs);
 
             println!("{}", self);
             println!("Step finished in {} ms", now.elapsed().as_millis());

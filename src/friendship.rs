@@ -2,11 +2,11 @@ use crate::user::User;
 
 pub type Friendship = String;
 pub trait FriendshipID {
-    fn from_users(user_one: &User, user_two: &User) -> String;
+    fn from_users<State>(user_one: &User<State>, user_two: &User<State>) -> String;
 }
 
 impl FriendshipID for Friendship {
-    fn from_users(user_one: &User, user_two: &User) -> String {
+    fn from_users<State>(user_one: &User<State>, user_two: &User<State>) -> String {
         let id = user_one.id();
         let homeserver = id.server_name();
         let user_one = id.localpart().to_string();
