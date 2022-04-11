@@ -932,6 +932,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec647867e2bf0772e28c8bcde4f0d19a9216916e890543b5a03ed8ef27b8f259"
 
 [[package]]
+name = "lipsum"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42ee7271c76a89032dcc7e595c0a739a9c5514eab483deb0e82981fe2098c56a"
+dependencies = [
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -975,6 +985,7 @@ checksum = "a3e378b66a060d48947b590737b30a1be76706c8dd7b8ba0f2fe3989c68a853f"
 name = "matrix-load-testing-tool"
 version = "0.1.0"
 dependencies = [
+ "lipsum",
  "matrix-sdk",
  "rand 0.8.5",
  "tokio",
