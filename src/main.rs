@@ -5,14 +5,14 @@ use matrix_sdk::ruma::api::client::r0::uiaa::{AuthData, Dummy};
 use matrix_sdk::ruma::events::room::message::MessageEventContent;
 use matrix_sdk::ruma::events::{AnyMessageEventContent, SyncMessageEvent};
 use matrix_sdk::ruma::{assign, RoomId};
-use matrix_sdk::SyncSettings;
 use matrix_sdk::{ruma::UserId, Client};
+use matrix_sdk::{ClientConfig, RequestConfig, SyncSettings};
 use rand::Rng;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use text::get_random_string;
 
 mod text;
@@ -26,42 +26,78 @@ struct User {
 }
 
 impl User {
-    pub async fn new(
-        id: String,
-        counter: &Arc<AtomicUsize>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(id: String) -> Result<Self, String> {
         // init client connection (register + login)
         let user_id = UserId::try_from(format!("@{id}:{SERVER}")).unwrap();
 
+        let instant = Instant::now();
+
         // in case we are testing against localhost or not https server, we need to setup test cfg, see `Client::homeserver_from_user_id`
-        let client = Client::new_from_user_id(user_id.clone())
-            .await
-            .expect("Couldn't create new client");
+        let client = Client::new_from_user_id_with_config(
+            user_id.clone(),
+            ClientConfig::new().request_config(
+                RequestConfig::new()
+                    .disable_retry()
+                    .timeout(Duration::from_secs(30)),
+            ),
+        )
+        .await
+        .expect("Couldn't create new client");
+
+        log::info!("new client {} {}", user_id, instant.elapsed().as_millis());
+
+        Ok(Self {
+            id: user_id,
+            client,
+        })
+    }
+
+    async fn register(&self) {
+        let instant = Instant::now();
 
         let req = assign!(register::Request::new(), {
-            username: Some(user_id.localpart()),
+            username: Some(self.id.localpart()),
             password: Some(PASSWORD),
             auth: Some(AuthData::Dummy(Dummy::new()))
         });
 
-        client.register(req).await.unwrap();
+        self.client.register(req).await.unwrap_or_else(|e| {
+            panic!(
+                "Failed to register user with id {} with error {}",
+                self.id.localpart(),
+                e
+            )
+        });
 
-        client
-            .login(user_id.localpart(), PASSWORD, None, None)
+        log::info!(
+            "registered req {} {}",
+            self.id,
+            instant.elapsed().as_millis()
+        );
+    }
+
+    async fn login(&self) {
+        let instant = Instant::now();
+
+        self.client
+            .login(self.id.localpart(), PASSWORD, None, None)
             .await
             .unwrap();
 
-        tokio::spawn({
-            let client = client.clone();
-            async move {
-                client.sync(SyncSettings::default()).await;
-            }
-        });
+        log::info!(
+            "login new client {} {}",
+            self.id,
+            instant.elapsed().as_millis()
+        );
+    }
 
-        client
+    async fn sync(&self, counter: &Arc<AtomicUsize>) {
+        let instant = Instant::now();
+
+        self.client
             .register_event_handler({
                 let counter = counter.clone();
-                let user_id = user_id.clone();
+                let user_id = self.id.clone();
                 move |ev: SyncMessageEvent<MessageEventContent>, room: Room| {
                     let counter = counter.clone();
                     let user_id = user_id.clone();
@@ -69,26 +105,35 @@ impl User {
                         if ev.sender.localpart() == user_id.localpart() {
                             return;
                         }
-                        println!(
+                        log::info!(
                             "User {} received a message from room {} and sent by {}",
                             user_id,
                             room.room_id(),
                             ev.sender
                         );
                         let actual_value = counter.load(Ordering::SeqCst);
-                        println!("Messages counter before decrease: {}", actual_value);
+                        log::info!("Messages counter before decrease: {}", actual_value);
 
                         counter.store(actual_value - 1, Ordering::SeqCst);
-                        println!("Messages counter after decrease: {}", actual_value - 1);
+                        log::info!("Messages counter after decrease: {}", actual_value - 1);
                     }
                 }
             })
             .await;
+        log::info!(
+            "Registered event handler {} {}",
+            self.id,
+            instant.elapsed().as_millis()
+        );
 
-        Ok(Self {
-            id: user_id,
-            client,
-        })
+        tokio::spawn({
+            let client = self.client.clone();
+            async move {
+                client.sync(SyncSettings::default()).await;
+            }
+        });
+
+        log::info!("Spawned sync {} {}", self.id, instant.elapsed().as_millis());
     }
 
     pub async fn send_message(&self, room_id: &RoomId) -> String {
@@ -103,9 +148,11 @@ impl User {
             .unwrap_or_else(|_| panic!("Couldn't send message to room {room_id}"));
 
         let event_id = sent_message.event_id.to_string();
-        println!(
+        log::info!(
             "Message sent from {} to room {} with event id {}",
-            self.id, room_id, event_id
+            self.id,
+            room_id,
+            event_id
         );
         event_id
     }
@@ -163,15 +210,46 @@ impl State {
         }
     }
 
-    pub async fn init_users(&mut self) {
+    pub async fn init_users(&mut self, counter: &Arc<AtomicUsize>) {
         let timestamp = time_now();
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
 
-        for i in actual_users..desired_users {
-            let id = format!("user_{i}_{timestamp}");
-            let user = User::new(id, &self.current_step.counter).await.unwrap();
-            self.users.insert(i, user);
+        let users_iter = actual_users..desired_users;
+
+        let mut tasks = vec![];
+
+        for i in users_iter {
+            tasks.push(tokio::spawn({
+                let counter = counter.clone();
+                async move {
+                    let id = format!("user_{i}_{timestamp}");
+                    let user = User::new(id).await;
+                    match user {
+                        Ok(user) => {
+                            user.register().await;
+                            user.login().await;
+                            user.sync(&counter).await;
+                            Ok((i, user))
+                        }
+                        Err(e) => Err(format!("Failed to create new user {} with error {}", i, e)),
+                    }
+                }
+            }));
+        }
+
+        for result in (futures::future::join_all(tasks).await)
+            .into_iter()
+            .flatten()
+        {
+            match result {
+                Ok((i, user)) => {
+                    self.users.insert(i, user);
+                }
+                Err(e) => {
+                    log::info!("{e}")
+                }
+            }
         }
     }
 
@@ -222,7 +300,7 @@ impl State {
                 for room_id in rooms {
                     let counter = self.current_step.counter.load(Ordering::SeqCst) + 1;
                     self.current_step.counter.store(counter, Ordering::SeqCst);
-                    println!("Current message counter: {}", counter);
+                    log::info!("Current message counter: {}", counter);
 
                     user.send_message(room_id).await;
                 }
@@ -249,17 +327,25 @@ impl State {
                 counter: message_counter.clone(),
             };
 
-            println!("Initializing users...");
-            self.init_users().await;
+            let timer = Instant::now();
+            print!("Initializing users...");
+            self.init_users(&self.current_step.counter.clone()).await;
+            println!("finished and took {} ms", timer.elapsed().as_millis());
 
-            println!("Initializing friendships and rooms...");
+            let timer = Instant::now();
+            print!("Initializing friendships and rooms...");
             self.init_friendships().await;
+            println!("finished and took {} ms", timer.elapsed().as_millis());
 
-            println!("Sending messages...");
+            let timer = Instant::now();
+            print!("Sending messages...");
             self.send_messages().await;
+            println!("finished and took {} ms", timer.elapsed().as_millis());
 
-            println!("Waiting for all messages to sync...");
+            let timer = Instant::now();
+            print!("Waiting for all messages to sync...");
             self.wait_for_messages().await;
+            println!("finished and took {} ms", timer.elapsed().as_millis());
 
             println!("{}", self);
             println!("Step finished in {} ms", now.elapsed().as_millis());
@@ -291,6 +377,8 @@ impl Display for State {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
+
     let config = Configuration {
         total_steps: 2,
         users_per_step: 50,
