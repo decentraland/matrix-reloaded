@@ -1,6 +1,3 @@
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
 use matrix_sdk::instant::Instant;
 use matrix_sdk::room::Room;
 use matrix_sdk::ruma::api::client::r0::account::register;
@@ -9,6 +6,8 @@ use matrix_sdk::ruma::api::client::r0::uiaa::{AuthData, Dummy};
 use matrix_sdk::ruma::events::room::message::MessageEventContent;
 use matrix_sdk::ruma::events::{AnyMessageEventContent, SyncMessageEvent};
 use matrix_sdk::{Client, ClientConfig, RequestConfig, SyncSettings};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use matrix_sdk::ruma::{assign, RoomId, UserId};
 
@@ -26,15 +25,16 @@ pub struct Registered {
 pub struct LoggedIn {
     metrics: Arc<Mutex<Metrics>>,
 }
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Synching {
     rooms: Vec<RoomId>,
     metrics: Arc<Mutex<Metrics>>,
 }
 
+#[derive(Clone)]
 pub struct User<State> {
     id: UserId,
-    client: Client,
+    client: Arc<tokio::sync::Mutex<Client>>,
     state: State,
 }
 
@@ -73,7 +73,7 @@ impl User<Disconnected> {
 
         Some(Self {
             id: user_id,
-            client: client.unwrap(),
+            client: Arc::new(tokio::sync::Mutex::new(client.unwrap())),
             state: Disconnected { metrics },
         })
     }
@@ -86,7 +86,8 @@ impl User<Disconnected> {
             password: Some(PASSWORD),
             auth: Some(AuthData::Dummy(Dummy::new()))
         });
-        let response = self.client.register(req).await;
+        let client = self.client.lock().await;
+        let response = client.register(req).await;
 
         match response {
             Ok(_) => {
@@ -116,8 +117,8 @@ impl User<Registered> {
     pub async fn login(&self) -> Option<User<LoggedIn>> {
         let instant = Instant::now();
 
-        let response = self
-            .client
+        let client = self.client.lock().await;
+        let response = client
             .login(self.id.localpart(), PASSWORD, None, None)
             .await;
 
@@ -158,7 +159,8 @@ impl User<LoggedIn> {
     pub async fn sync(&self) -> User<Synching> {
         let instant = Instant::now();
 
-        self.client
+        let client = self.client.lock().await;
+        client
             .register_event_handler({
                 let metrics = self.state.metrics.clone();
                 let user_id = self.id.clone();
@@ -188,7 +190,7 @@ impl User<LoggedIn> {
         );
 
         tokio::spawn({
-            let client = self.client.clone();
+            let client = client.clone();
             async move {
                 client.sync(SyncSettings::default()).await;
             }
@@ -209,7 +211,9 @@ impl User<LoggedIn> {
 impl User<Synching> {
     pub async fn create_room(&self) -> Option<RoomId> {
         let request = create_room::Request::new();
-        let response = self.client.create_room(request).await;
+
+        let client = self.client.lock().await;
+        let response = client.create_room(request).await;
         match response {
             Ok(ref response) => {
                 // notify
@@ -224,7 +228,8 @@ impl User<Synching> {
     }
 
     pub async fn join_room(&mut self, room_id: &RoomId) {
-        let response = self.client.join_room_by_id(room_id).await;
+        let client = self.client.lock().await;
+        let response = client.join_room_by_id(room_id).await;
         match response {
             Ok(ref response) => {
                 self.state.rooms.push(response.room_id.clone());
@@ -241,7 +246,8 @@ impl User<Synching> {
             get_random_string(),
         ));
 
-        let response = self.client.room_send(room_id, content, None).await;
+        let client = self.client.lock().await;
+        let response = client.room_send(room_id, content, None).await;
 
         match response {
             Ok(response) => {
@@ -266,10 +272,6 @@ impl User<Synching> {
 
     pub async fn act(&self) {
         for room_id in &self.state.rooms {
-            // let counter_value = counter.load(Ordering::SeqCst) + 1;
-            // counter.store(counter_value, Ordering::SeqCst);
-            // log::info!("Current message counter: {}", counter_value);
-
             self.send_message(room_id).await;
         }
     }

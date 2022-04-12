@@ -1,12 +1,14 @@
 use friendship::{Friendship, FriendshipID};
+use futures::future::join_all;
 use metrics::Metrics;
 use rand::Rng;
 use std::fmt::Display;
-use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use text::create_progress_bar;
 use time::time_now;
+use tokio::time::interval;
 use user::{Synching, User};
 
 mod friendship;
@@ -29,22 +31,23 @@ pub struct State {
 }
 
 impl Display for State {
-    fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        println!("Amount of users: {}", self.users.len());
-        println!("Amount of friendships: {}", self.friendships.len());
-
-        println!("Listing friendships: ");
+    fn fmt(&self, w: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(w, "Amount of users: {}", self.users.len()).unwrap();
+        writeln!(w, "Amount of friendships: {}", self.friendships.len()).unwrap();
+        writeln!(w, "Listing friendships: ").unwrap();
         for friendship in &self.friendships {
-            println!("- {}", friendship);
+            writeln!(w, "- {}", friendship).unwrap();
         }
-        let metrics = self.metrics.lock().unwrap();
 
-        println!("HTTP Errors count: {}", metrics.http_errors);
-        println!("Sent messages count: {}", metrics.sent_messages.len());
-        println!(
+        let metrics = self.metrics.lock().unwrap();
+        writeln!(w, "HTTP Errors count: {}", metrics.http_errors).unwrap();
+        writeln!(w, "Sent messages count: {}", metrics.sent_messages.len()).unwrap();
+        writeln!(
+            w,
             "Recevied messages count: {}",
             metrics.received_messages.len()
-        );
+        )
+        .unwrap();
 
         Ok(())
     }
@@ -64,16 +67,21 @@ impl State {
         let timestamp = time_now();
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
-
-        let users_iter = actual_users..desired_users;
-
-        let mut tasks = vec![];
-
         let server = self.config.homeserver_url.clone();
-        for i in users_iter {
-            tasks.push(tokio::spawn({
-                let metrics = self.metrics.clone();
+
+        let mut handles = vec![];
+
+        let progress_bar = create_progress_bar(
+            "Init users".to_string(),
+            (desired_users - actual_users).try_into().unwrap(),
+        );
+        progress_bar.tick();
+
+        for i in actual_users..desired_users {
+            handles.push(tokio::spawn({
                 let server = server.clone();
+                let metrics = self.metrics.clone();
+                let progress_bar = progress_bar.clone();
                 async move {
                     let id = format!("user_{i}_{timestamp}");
                     let user = User::new(id, server, metrics).await;
@@ -82,6 +90,7 @@ impl State {
                         if let Some(user) = user.register().await {
                             if let Some(user) = user.login().await {
                                 log::info!("User is now synching: {}", user.id());
+                                progress_bar.inc(1);
                                 return Some(user.sync().await);
                             }
                         }
@@ -91,13 +100,10 @@ impl State {
             }));
         }
 
-        for user in (futures::future::join_all(tasks).await)
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
+        for user in (join_all(handles).await).into_iter().flatten().flatten() {
             self.users.push(user);
         }
+        progress_bar.finish_and_clear();
     }
 
     async fn init_friendships(&mut self) {
@@ -105,65 +111,96 @@ impl State {
             ((self.users.len() as f32) * self.config.friendship_ratio).ceil() as usize;
         let amount_of_users = self.users.len();
 
+        let progress_bar = create_progress_bar(
+            "Init friendhips".to_string(),
+            (amount_of_friendships - self.friendships.len())
+                .try_into()
+                .unwrap(),
+        );
+        progress_bar.tick();
+        let mut handles = vec![];
         while self.friendships.len() < amount_of_friendships {
-            let random_user1 = rand::thread_rng().gen_range(0..amount_of_users);
-            let random_user2 = rand::thread_rng().gen_range(0..amount_of_users);
-            if random_user1 == random_user2 {
+            let first_random_user = rand::thread_rng().gen_range(0..amount_of_users);
+            let second_random_user = rand::thread_rng().gen_range(0..amount_of_users);
+            if first_random_user == second_random_user {
                 continue;
             }
 
-            let user1 = &self.users[random_user1];
-            let user2 = &self.users[random_user2];
+            let first_user = &self.users[first_random_user];
+            let second_user = &self.users[second_random_user];
 
-            let friendship = Friendship::from_users(user1, user2);
+            let friendship = Friendship::from_users(first_user, second_user);
 
             if self.friendships.contains(&friendship) {
                 continue;
             }
 
-            self.friendships.push(friendship);
-
-            let room_created = user1.create_room().await;
-            if let Some(room_id) = room_created {
-                self.users[random_user1].join_room(&room_id).await;
-                self.users[random_user2].join_room(&room_id).await;
-            } else {
-                log::info!("User {} couldn't create a room", user1.id());
-            }
+            handles.push(tokio::spawn({
+                self.friendships.push(friendship);
+                let mut first_user = first_user.clone();
+                let mut second_user = second_user.clone();
+                let progress_bar = progress_bar.clone();
+                async move {
+                    let room_created = first_user.create_room().await;
+                    if let Some(room_id) = room_created {
+                        first_user.join_room(&room_id).await;
+                        second_user.join_room(&room_id).await;
+                    } else {
+                        log::info!("User {} couldn't create a room", first_user.id());
+                    }
+                    progress_bar.inc(1);
+                }
+            }));
         }
+        join_all(handles).await;
+        progress_bar.finish_and_clear();
     }
 
     async fn act(&mut self) {
-        for user in &self.users {
-            user.act().await;
+        let timer = Instant::now();
+        let time_to_run = 120;
+
+        let progress_bar = create_progress_bar("Running".to_string(), 120 * 100);
+        progress_bar.tick();
+
+        let mut interval = interval(Duration::from_secs(1));
+
+        loop {
+            if timer.elapsed().as_secs() > time_to_run {
+                break;
+            }
+            interval.tick().await;
+            progress_bar.inc(1);
+            let mut handles = vec![];
+
+            for user in self.users.iter().take(100) {
+                let user = user.clone();
+                handles.push(tokio::spawn({
+                    let user = user.clone();
+                    let progress_bar = progress_bar.clone();
+                    async move {
+                        user.act().await;
+                        progress_bar.inc(1);
+                    }
+                }));
+            }
+            join_all(handles).await;
         }
+        progress_bar.finish_and_clear();
     }
 
     pub async fn run(&mut self) {
         for step in 1..=self.config.total_steps {
-            let now = Instant::now();
-            println!("Starting step {}", step);
-
-            let timer = Instant::now();
-            print!("Initializing users...");
-            io::stdout().flush().unwrap();
+            println!("Running step {}", step);
 
             self.init_users().await;
-            println!("finished and took {} ms", timer.elapsed().as_millis());
-
-            let timer = Instant::now();
-            print!("Initializing friendships and rooms...");
-            io::stdout().flush().unwrap();
             self.init_friendships().await;
-            println!("finished and took {} ms", timer.elapsed().as_millis());
-
             self.act().await;
 
             let secs = Duration::from_secs(5);
             thread::sleep(secs);
 
             println!("{}", self);
-            println!("Step finished in {} ms", now.elapsed().as_millis());
         }
     }
 }
