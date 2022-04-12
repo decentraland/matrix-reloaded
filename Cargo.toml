@@ -12,6 +12,9 @@ futures = "0.3.21"
 log = "0.4.16"
 env_logger = "0.9.0"
 indicatif = "0.16.2"
+serde = "1.0.136"
+serde_yaml = "0.8.23"
+serde_with = "1.12.1"
 
 [lib]
 name = "matrix_load_testing_tool"

@@ -8,11 +8,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = env::args();
 
-    let program_path = args.next().unwrap();
+    args.next().unwrap();
 
-    println!("{}", program_path);
     if args.len() < 1 {
-        eprintln!("Usage: time {} <server1> [<server>]", program_path);
+        eprintln!("Usage: cargo run -- <server>");
         return Ok(());
     }
 
@@ -24,9 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Configuration {
         total_steps: 2,
-        users_per_step: 50,
+        users_per_step: 5,
         friendship_ratio: 0.5,
         homeserver_url,
+        time_to_run_per_step: 120,
     };
     let mut state = State::new(config);
     state.run().await;

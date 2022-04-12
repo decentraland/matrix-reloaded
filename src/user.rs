@@ -6,8 +6,11 @@ use matrix_sdk::ruma::api::client::r0::uiaa::{AuthData, Dummy};
 use matrix_sdk::ruma::events::room::message::MessageEventContent;
 use matrix_sdk::ruma::events::{AnyMessageEventContent, SyncMessageEvent};
 use matrix_sdk::{Client, ClientConfig, RequestConfig, SyncSettings};
-use std::sync::{Arc, Mutex};
+use rand::Rng;
+use serde::Serialize;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use matrix_sdk::ruma::{assign, RoomId, UserId};
 
@@ -17,18 +20,18 @@ use crate::text::get_random_string;
 const PASSWORD: &str = "asdfasdf";
 
 pub struct Disconnected {
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Metrics,
 }
 pub struct Registered {
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Metrics,
 }
 pub struct LoggedIn {
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Metrics,
 }
 #[derive(Default, Clone)]
 pub struct Synching {
-    rooms: Vec<RoomId>,
-    metrics: Arc<Mutex<Metrics>>,
+    rooms: Arc<Mutex<Vec<RoomId>>>,
+    metrics: Metrics,
 }
 
 #[derive(Clone)]
@@ -44,11 +47,20 @@ impl<State> User<State> {
     }
 }
 
+#[derive(Serialize, Debug, Eq, Hash, PartialEq, Clone)]
+pub enum UserRequest {
+    Register,
+    Login,
+    CreateRoom,
+    JoinRoom,
+    SendMessage,
+}
+
 impl User<Disconnected> {
     pub async fn new(
         id: String,
         homeserver: String,
-        metrics: Arc<Mutex<Metrics>>,
+        metrics: Metrics,
     ) -> Option<User<Disconnected>> {
         // init client connection (register + login)
         let user_id = UserId::try_from(format!("@{id}:{homeserver}")).unwrap();
@@ -78,7 +90,7 @@ impl User<Disconnected> {
         })
     }
 
-    pub async fn register(&self) -> Option<User<Registered>> {
+    pub async fn register(&mut self) -> Option<User<Registered>> {
         let instant = Instant::now();
 
         let req = assign!(register::Request::new(), {
@@ -91,11 +103,9 @@ impl User<Disconnected> {
 
         match response {
             Ok(_) => {
-                log::info!(
-                    "registered req {} {}",
-                    self.id,
-                    instant.elapsed().as_millis()
-                );
+                self.state
+                    .metrics
+                    .report_request_duration((UserRequest::Register, instant.elapsed()));
                 Some(User {
                     id: self.id.clone(),
                     client: self.client.clone(),
@@ -105,8 +115,7 @@ impl User<Disconnected> {
                 })
             }
             Err(e) => {
-                let mut metrics = self.state.metrics.lock().unwrap();
-                metrics.report_error(e);
+                self.state.metrics.report_error((e, UserRequest::Register));
                 None
             }
         }
@@ -114,7 +123,7 @@ impl User<Disconnected> {
 }
 
 impl User<Registered> {
-    pub async fn login(&self) -> Option<User<LoggedIn>> {
+    pub async fn login(&mut self) -> Option<User<LoggedIn>> {
         let instant = Instant::now();
 
         let client = self.client.lock().await;
@@ -124,11 +133,9 @@ impl User<Registered> {
 
         match response {
             Ok(_) => {
-                log::info!(
-                    "login new client {} {}",
-                    self.id,
-                    instant.elapsed().as_millis()
-                );
+                self.state
+                    .metrics
+                    .report_request_duration((UserRequest::Login, instant.elapsed()));
                 Some(User {
                     id: self.id.clone(),
                     client: self.client.clone(),
@@ -138,15 +145,8 @@ impl User<Registered> {
                 })
             }
             Err(e) => {
-                log::info!(
-                    "Couldn't log in user {} {}, reason {}",
-                    self.id,
-                    instant.elapsed().as_millis(),
-                    e
-                );
                 if let matrix_sdk::Error::Http(e) = e {
-                    let mut metrics = self.state.metrics.lock().unwrap();
-                    metrics.report_error(e);
+                    self.state.metrics.report_error((e, UserRequest::Login));
                 }
 
                 None
@@ -157,15 +157,13 @@ impl User<Registered> {
 
 impl User<LoggedIn> {
     pub async fn sync(&self) -> User<Synching> {
-        let instant = Instant::now();
-
         let client = self.client.lock().await;
         client
             .register_event_handler({
                 let metrics = self.state.metrics.clone();
                 let user_id = self.id.clone();
                 move |ev: SyncMessageEvent<MessageEventContent>, room: Room| {
-                    let metrics = metrics.clone();
+                    let mut metrics = metrics.clone();
                     let user_id = user_id.clone();
                     async move {
                         if ev.sender.localpart() == user_id.localpart() {
@@ -177,51 +175,49 @@ impl User<LoggedIn> {
                             room.room_id(),
                             ev.sender
                         );
-                        let mut metrics = metrics.lock().unwrap();
                         metrics.report_message_received(ev.event_id.to_string());
                     }
                 }
             })
             .await;
-        log::info!(
-            "Registered event handler {} {}",
-            self.id,
-            instant.elapsed().as_millis()
-        );
 
         tokio::spawn({
+            // we are not cloning the mutex to avoid locking it forever
             let client = client.clone();
             async move {
                 client.sync(SyncSettings::default()).await;
             }
         });
 
-        log::info!("Spawned sync {} {}", self.id, instant.elapsed().as_millis());
         User {
             id: self.id.clone(),
             client: self.client.clone(),
             state: Synching {
                 metrics: self.state.metrics.clone(),
-                ..Default::default()
+                rooms: Arc::new(Mutex::new(vec![])),
             },
         }
     }
 }
 
 impl User<Synching> {
-    pub async fn create_room(&self) -> Option<RoomId> {
-        let request = create_room::Request::new();
-
+    pub async fn create_room(&mut self) -> Option<RoomId> {
         let client = self.client.lock().await;
+
+        let instant = Instant::now();
+        let request = create_room::Request::new();
         let response = client.create_room(request).await;
         match response {
             Ok(ref response) => {
-                // notify
+                self.state
+                    .metrics
+                    .report_request_duration((UserRequest::CreateRoom, instant.elapsed()));
                 Some(response.room_id.clone())
             }
             Err(e) => {
-                let mut metrics = self.state.metrics.lock().unwrap();
-                metrics.report_error(e);
+                self.state
+                    .metrics
+                    .report_error((e, UserRequest::CreateRoom));
                 None
             }
         }
@@ -229,50 +225,57 @@ impl User<Synching> {
 
     pub async fn join_room(&mut self, room_id: &RoomId) {
         let client = self.client.lock().await;
+        let instant = Instant::now();
         let response = client.join_room_by_id(room_id).await;
         match response {
             Ok(ref response) => {
-                self.state.rooms.push(response.room_id.clone());
+                self.state
+                    .metrics
+                    .report_request_duration((UserRequest::JoinRoom, instant.elapsed()));
+                self.state.rooms.lock().await.push(response.room_id.clone());
             }
             Err(e) => {
-                let mut metrics = self.state.metrics.lock().unwrap();
-                metrics.report_error(e);
+                self.state.metrics.report_error((e, UserRequest::JoinRoom));
             }
         }
     }
 
-    async fn send_message(&self, room_id: &RoomId) {
+    pub async fn act(&mut self) {
+        let client = self.client.lock().await;
+        let rooms = self.state.rooms.lock().await;
+
+        let room = match rooms.len() {
+            0 => {
+                return;
+            }
+            1 => 0,
+            rooms_len => rand::thread_rng().gen_range(0..rooms_len),
+        };
+
+        let room_id = &rooms[room];
         let content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(
             get_random_string(),
         ));
-
-        let client = self.client.lock().await;
+        let instant = Instant::now();
         let response = client.room_send(room_id, content, None).await;
 
         match response {
             Ok(response) => {
-                let mut metrics = self.state.metrics.lock().unwrap();
-                let event_id = response.event_id.to_string();
-                metrics.report_message_sent(event_id.clone());
-                log::info!(
-                    "Message sent from {} to room {} with event id {}",
-                    self.id,
-                    room_id,
-                    event_id
-                )
+                self.state
+                    .metrics
+                    .report_request_duration((UserRequest::SendMessage, instant.elapsed()));
+
+                self.state
+                    .metrics
+                    .report_message_sent(response.event_id.to_string());
             }
             Err(e) => {
                 if let matrix_sdk::Error::Http(e) = e {
-                    let mut metrics = self.state.metrics.lock().unwrap();
-                    metrics.report_error(e);
+                    self.state
+                        .metrics
+                        .report_error((e, UserRequest::SendMessage));
                 }
             }
-        }
-    }
-
-    pub async fn act(&self) {
-        for room_id in &self.state.rooms {
-            self.send_message(room_id).await;
         }
     }
 }

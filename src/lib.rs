@@ -3,7 +3,6 @@ use futures::future::join_all;
 use metrics::Metrics;
 use rand::Rng;
 use std::fmt::Display;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use text::create_progress_bar;
@@ -21,13 +20,14 @@ pub struct Configuration {
     pub total_steps: usize,
     pub users_per_step: usize,
     pub friendship_ratio: f32,
+    pub time_to_run_per_step: usize,
     pub homeserver_url: String,
 }
 pub struct State {
     config: Configuration,
     friendships: Vec<Friendship>,
     users: Vec<User<Synching>>,
-    metrics: Arc<Mutex<Metrics>>,
+    metrics: Metrics,
 }
 
 impl Display for State {
@@ -39,16 +39,6 @@ impl Display for State {
             writeln!(w, "- {}", friendship).unwrap();
         }
 
-        let metrics = self.metrics.lock().unwrap();
-        writeln!(w, "HTTP Errors count: {}", metrics.http_errors).unwrap();
-        writeln!(w, "Sent messages count: {}", metrics.sent_messages.len()).unwrap();
-        writeln!(
-            w,
-            "Recevied messages count: {}",
-            metrics.received_messages.len()
-        )
-        .unwrap();
-
         Ok(())
     }
 }
@@ -59,7 +49,7 @@ impl State {
             config,
             friendships: vec![],
             users: vec![],
-            metrics: Arc::new(Mutex::new(Metrics::default())),
+            metrics: Metrics::default(),
         }
     }
 
@@ -86,8 +76,8 @@ impl State {
                     let id = format!("user_{i}_{timestamp}");
                     let user = User::new(id, server, metrics).await;
 
-                    if let Some(user) = user {
-                        if let Some(user) = user.register().await {
+                    if let Some(mut user) = user {
+                        if let Some(mut user) = user.register().await {
                             if let Some(user) = user.login().await {
                                 log::info!("User is now synching: {}", user.id());
                                 progress_bar.inc(1);
@@ -157,26 +147,31 @@ impl State {
     }
 
     async fn act(&mut self) {
-        let timer = Instant::now();
-        let time_to_run = 120;
+        let start = Instant::now();
+        let secs = self.config.time_to_run_per_step;
+        let time_to_run = Duration::from_secs(secs.try_into().unwrap());
 
-        let progress_bar = create_progress_bar("Running".to_string(), 120 * 100);
+        let progress_bar = create_progress_bar(
+            "Running".to_string(),
+            (secs * self.users.len()).try_into().unwrap(),
+        );
         progress_bar.tick();
 
         let mut interval = interval(Duration::from_secs(1));
 
         loop {
-            if timer.elapsed().as_secs() > time_to_run {
+            let duration_since_start = Instant::now().checked_duration_since(start).unwrap();
+            if duration_since_start.ge(&time_to_run) {
                 break;
             }
+
             interval.tick().await;
-            progress_bar.inc(1);
             let mut handles = vec![];
 
             for user in self.users.iter().take(100) {
                 let user = user.clone();
                 handles.push(tokio::spawn({
-                    let user = user.clone();
+                    let mut user = user.clone();
                     let progress_bar = progress_bar.clone();
                     async move {
                         user.act().await;
@@ -199,8 +194,9 @@ impl State {
 
             let secs = Duration::from_secs(5);
             thread::sleep(secs);
-
             println!("{}", self);
+
+            self.metrics.generate_report();
         }
     }
 }
