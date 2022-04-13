@@ -28,6 +28,7 @@ struct Report {
     requests_average_time: Vec<(UserRequest, u128)>,
     http_errors_per_request: Vec<(UserRequest, usize)>,
     message_delivery_average_time: u128,
+    lost_messages: usize,
 }
 
 impl Metrics {
@@ -94,6 +95,14 @@ impl Metrics {
         total / (messages.len() as u128)
     }
 
+    fn calculate_lost_messages(&self) -> usize {
+        let messages = self.messages.lock().unwrap();
+        messages
+            .iter()
+            .filter(|(_, times)| times.received.is_none())
+            .count()
+    }
+
     pub fn generate_report(&self) {
         let mut http_errors_per_request =
             Vec::from_iter(self.http_errors.lock().unwrap().iter().fold(
@@ -109,11 +118,13 @@ impl Metrics {
         requests_average_time.sort_unstable_by_key(|(_, time)| *time);
 
         let message_delivery_average_time = self.calculate_message_delivery_average_time();
+        let lost_messages = self.calculate_lost_messages();
 
         let report = Report {
             requests_average_time,
             message_delivery_average_time,
             http_errors_per_request,
+            lost_messages,
         };
 
         create_dir("output").unwrap_or_default();

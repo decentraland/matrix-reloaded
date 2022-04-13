@@ -20,8 +20,8 @@ pub struct Configuration {
     pub total_steps: usize,
     pub users_per_step: usize,
     pub friendship_ratio: f32,
-    pub time_to_run_per_step: usize,
     pub homeserver_url: String,
+    pub time_to_run_per_step: usize,
 }
 pub struct State {
     config: Configuration,
