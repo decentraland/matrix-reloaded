@@ -1,10 +1,11 @@
 use friendship::{Friendship, FriendshipID};
 use futures::future::join_all;
+use indicatif::{ProgressBar, ProgressStyle};
 use metrics::Metrics;
-use rand::Rng;
+use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-use std::thread;
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 use text::create_progress_bar;
 use time::time_now;
@@ -17,25 +18,16 @@ mod text;
 mod time;
 mod user;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Configuration {
     pub homeserver_url: String,
+    pub output_dir: String,
     pub total_steps: usize,
     pub users_per_step: usize,
     pub friendship_ratio: f32,
-    pub time_to_run_per_step: usize,
-}
-
-impl Default for Configuration {
-    fn default() -> Self {
-        Self {
-            homeserver_url: "".into(),
-            total_steps: 1,
-            users_per_step: 100,
-            friendship_ratio: 0.5,
-            time_to_run_per_step: 60,
-        }
-    }
+    pub step_duration_in_secs: usize,
+    pub max_users_to_act_per_tick: usize,
+    pub waiting_period: usize,
 }
 
 pub struct State {
@@ -118,7 +110,6 @@ impl State {
     }
 
     async fn init_friendships(&mut self) {
-        let amount_of_users = self.users.len();
         let amount_of_friendships = self.calculate_step_friendships();
 
         let progress_bar = create_progress_bar(
@@ -131,14 +122,12 @@ impl State {
 
         let mut handles = vec![];
         while self.friendships.len() < amount_of_friendships {
-            let first_random_user = rand::thread_rng().gen_range(0..amount_of_users);
-            let second_random_user = rand::thread_rng().gen_range(0..amount_of_users);
-            if first_random_user == second_random_user {
+            let mut rng = rand::thread_rng();
+            let first_user = self.users.iter().choose(&mut rng).unwrap();
+            let second_user = self.users.iter().choose(&mut rng).unwrap();
+            if first_user.id() == second_user.id() {
                 continue;
             }
-
-            let first_user = &self.users[first_random_user];
-            let second_user = &self.users[second_random_user];
 
             let friendship = Friendship::from_users(first_user, second_user);
 
@@ -169,27 +158,25 @@ impl State {
 
     async fn act(&mut self) {
         let start = Instant::now();
-        let secs = self.config.time_to_run_per_step;
-        let time_to_run = Duration::from_secs(secs.try_into().unwrap());
+        let step_secs = self.config.step_duration_in_secs;
+        let step_duration = Duration::from_secs(step_secs as u64);
 
+        let users_to_act = std::cmp::min(self.users.len(), self.config.max_users_to_act_per_tick);
         let progress_bar = create_progress_bar(
             "Running".to_string(),
-            (secs * self.users.len()).try_into().unwrap(),
+            (step_secs * users_to_act).try_into().unwrap(),
         );
         progress_bar.tick();
 
-        let mut interval = interval(Duration::from_secs(1));
-
+        let mut one_sec_interval = interval(Duration::from_secs(1));
+        let mut rng = rand::thread_rng();
         loop {
-            let duration_since_start = Instant::now().checked_duration_since(start).unwrap();
-            if duration_since_start.ge(&time_to_run) {
+            if start.elapsed().ge(&step_duration) {
                 break;
             }
-
-            interval.tick().await;
             let mut handles = vec![];
 
-            for user in self.users.iter().take(100) {
+            for user in self.users.iter().choose_multiple(&mut rng, users_to_act) {
                 let user = user.clone();
                 handles.push(tokio::spawn({
                     let mut user = user.clone();
@@ -201,23 +188,55 @@ impl State {
                 }));
             }
             join_all(handles).await;
+
+            one_sec_interval.tick().await;
         }
         progress_bar.finish_and_clear();
     }
 
-    pub async fn run(&mut self, output_dir: String) {
+    async fn waiting_period(&self) {
+        let spinner = ProgressBar::new_spinner()
+            .with_style(
+                ProgressStyle::default_spinner()
+                    .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+                    .template("{prefix:.bold.dim} {spinner} {wide_msg}"),
+            )
+            .with_prefix("Tear down:");
+
+        let waiting_time = Duration::from_secs(self.config.waiting_period as u64);
+        let one_sec = Duration::from_secs(1);
+        let start = Instant::now();
+        while !self.metrics.all_messages_received() {
+            if start.elapsed().ge(&waiting_time) {
+                break;
+            }
+            let wait_one_sec = Instant::now();
+            spinner.set_message("Waiting for messages...");
+            loop {
+                if wait_one_sec.elapsed().ge(&one_sec) {
+                    break;
+                }
+                sleep(Duration::from_millis(100));
+                spinner.inc(1);
+            }
+
+            spinner.set_message("Checking all were messages received...");
+        }
+    }
+
+    pub async fn run(&mut self) {
+        println!("{:?}", self.config);
         for step in 1..=self.config.total_steps {
             println!("Running step {}", step);
 
             self.init_users().await;
             self.init_friendships().await;
             self.act().await;
+            self.waiting_period().await;
 
-            let secs = Duration::from_secs(5);
-            thread::sleep(secs);
             println!("{}", self);
 
-            self.metrics.generate_report(output_dir.clone());
+            self.metrics.generate_report(self.config.output_dir.clone());
         }
     }
 }

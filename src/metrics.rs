@@ -3,6 +3,7 @@ use matrix_sdk::HttpError;
 
 use serde_with::serde_as;
 use std::{
+    cmp::Reverse,
     collections::HashMap,
     fs::{create_dir, create_dir_all, File},
     sync::{Arc, Mutex},
@@ -103,21 +104,28 @@ impl Metrics {
             .count()
     }
 
+    pub fn all_messages_received(&self) -> bool {
+        self.calculate_lost_messages() == 0
+    }
+
+    fn calculate_http_errors_per_request(&self) -> Vec<(UserRequest, usize)> {
+        Vec::from_iter(self.http_errors.lock().unwrap().iter().fold(
+            HashMap::<UserRequest, usize>::new(),
+            |mut map, (_, request_type)| {
+                *map.entry(request_type.clone()).or_default() += 1;
+                map
+            },
+        ))
+    }
+
     pub fn generate_report(&self, output_dir: String) {
-        let mut http_errors_per_request =
-            Vec::from_iter(self.http_errors.lock().unwrap().iter().fold(
-                HashMap::<UserRequest, usize>::new(),
-                |mut map, (_, request_type)| {
-                    *map.entry(request_type.clone()).or_default() += 1;
-                    map
-                },
-            ));
-        http_errors_per_request.sort_unstable_by_key(|(_, count)| *count);
-
+        let mut http_errors_per_request = self.calculate_http_errors_per_request();
         let mut requests_average_time = self.calculate_requests_average_time();
-        requests_average_time.sort_unstable_by_key(|(_, time)| *time);
-
         let message_delivery_average_time = self.calculate_message_delivery_average_time();
+
+        requests_average_time.sort_unstable_by_key(|(_, time)| Reverse(*time));
+        http_errors_per_request.sort_unstable_by_key(|(_, count)| Reverse(*count));
+
         let lost_messages = self.calculate_lost_messages();
 
         let report = Report {

@@ -1,4 +1,5 @@
 use clap::Parser;
+use config::Config;
 use matrix_load_testing_tool::{Configuration, State};
 
 #[derive(Parser, Debug)]
@@ -17,16 +18,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let args = Args::parse();
+    let config = Config::builder()
+        .add_source(config::File::with_name("Config"))
+        .set_override("homeserver_url", args.homeserver)
+        .unwrap()
+        .set_override("output_dir", args.output_dir)
+        .unwrap()
+        .build()
+        .unwrap();
 
-    let config = Configuration {
-        total_steps: 2,
-        users_per_step: 5,
-        friendship_ratio: 0.5,
-        homeserver_url: args.homeserver,
-        time_to_run_per_step: 120,
+    let config = config.try_deserialize::<Configuration>();
+    match config {
+        Ok(config) => {
+            let mut state = State::new(config);
+            state.run().await;
+        }
+        Err(e) => {
+            println!("Couldn't parse config {}", e);
+        }
     };
-    let mut state = State::new(config);
-    state.run(args.output_dir).await;
-
     Ok(())
 }
