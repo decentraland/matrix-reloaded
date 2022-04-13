@@ -4,7 +4,7 @@ use matrix_sdk::HttpError;
 use serde_with::serde_as;
 use std::{
     collections::HashMap,
-    fs::{create_dir, File},
+    fs::{create_dir, create_dir_all, File},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -103,7 +103,7 @@ impl Metrics {
             .count()
     }
 
-    pub fn generate_report(&self) {
+    pub fn generate_report(&self, output_dir: String) {
         let mut http_errors_per_request =
             Vec::from_iter(self.http_errors.lock().unwrap().iter().fold(
                 HashMap::<UserRequest, usize>::new(),
@@ -127,9 +127,16 @@ impl Metrics {
             lost_messages,
         };
 
-        create_dir("output").unwrap_or_default();
+        let result = create_dir_all(&output_dir);
+        let output_dir = if result.is_err() {
+            println!("Couldn't ensure output folder, defaulting to 'output/'");
+            create_dir("output").unwrap();
+            "output".to_string()
+        } else {
+            output_dir
+        };
 
-        let path = format!("output/report_{}.yaml", time_now());
+        let path = format!("{}/report_{}.yaml", output_dir, time_now());
         let buffer = File::create(&path).unwrap();
 
         serde_yaml::to_writer(buffer, &report).expect("Couldn't write report to file");

@@ -2,6 +2,7 @@ use friendship::{Friendship, FriendshipID};
 use futures::future::join_all;
 use metrics::Metrics;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,6 +17,7 @@ mod text;
 mod time;
 mod user;
 
+#[derive(Serialize, Deserialize)]
 pub struct Configuration {
     pub homeserver_url: String,
     pub total_steps: usize,
@@ -23,6 +25,19 @@ pub struct Configuration {
     pub friendship_ratio: f32,
     pub time_to_run_per_step: usize,
 }
+
+impl Default for Configuration {
+    fn default() -> Self {
+        Self {
+            homeserver_url: "".into(),
+            total_steps: 1,
+            users_per_step: 100,
+            friendship_ratio: 0.5,
+            time_to_run_per_step: 60,
+        }
+    }
+}
+
 pub struct State {
     config: Configuration,
     friendships: Vec<Friendship>,
@@ -190,7 +205,7 @@ impl State {
         progress_bar.finish_and_clear();
     }
 
-    pub async fn run(&mut self) {
+    pub async fn run(&mut self, output_dir: String) {
         for step in 1..=self.config.total_steps {
             println!("Running step {}", step);
 
@@ -202,7 +217,7 @@ impl State {
             thread::sleep(secs);
             println!("{}", self);
 
-            self.metrics.generate_report();
+            self.metrics.generate_report(output_dir.clone());
         }
     }
 }
