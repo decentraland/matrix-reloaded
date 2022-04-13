@@ -27,7 +27,7 @@ pub struct Metrics {
 #[derive(serde::Serialize, Default)]
 struct Report {
     requests_average_time: Vec<(UserRequest, u128)>,
-    http_errors_per_request: Vec<(UserRequest, usize)>,
+    http_errors_per_request: Vec<(String, usize)>,
     message_delivery_average_time: u128,
     lost_messages: usize,
 }
@@ -108,11 +108,13 @@ impl Metrics {
         self.calculate_lost_messages() == 0
     }
 
-    fn calculate_http_errors_per_request(&self) -> Vec<(UserRequest, usize)> {
+    fn calculate_http_errors_per_request(&self) -> Vec<(String, usize)> {
         Vec::from_iter(self.http_errors.lock().unwrap().iter().fold(
-            HashMap::<UserRequest, usize>::new(),
-            |mut map, (_, request_type)| {
-                *map.entry(request_type.clone()).or_default() += 1;
+            HashMap::<String, usize>::new(),
+            |mut map, (e, request_type)| {
+                let error_code = get_error_code(e);
+                *map.entry(format!("{:?}:{:?}", request_type.clone(), error_code))
+                    .or_default() += 1;
                 map
             },
         ))
@@ -149,5 +151,25 @@ impl Metrics {
 
         serde_yaml::to_writer(buffer, &report).expect("Couldn't write report to file");
         println!("Report generated: {}", path);
+    }
+}
+
+fn get_error_code(e: &HttpError) -> String {
+    use matrix_sdk::ruma::api::error::*;
+    match e {
+        HttpError::ClientApi(FromHttpResponseError::Http(ServerError::Known(e))) => {
+            e.status_code.to_string()
+        }
+        HttpError::Server(status_code) => status_code.to_string(),
+        HttpError::UiaaError(FromHttpResponseError::Http(ServerError::Known(e))) => match e {
+            matrix_sdk::ruma::api::client::r0::uiaa::UiaaResponse::AuthResponse(e) => {
+                e.auth_error.as_ref().unwrap().message.clone()
+            }
+            matrix_sdk::ruma::api::client::r0::uiaa::UiaaResponse::MatrixError(e) => {
+                e.kind.to_string()
+            }
+            _ => e.to_string(),
+        },
+        _ => e.to_string(),
     }
 }
