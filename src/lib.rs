@@ -17,10 +17,10 @@ mod time;
 mod user;
 
 pub struct Configuration {
+    pub homeserver_url: String,
     pub total_steps: usize,
     pub users_per_step: usize,
     pub friendship_ratio: f32,
-    pub homeserver_url: String,
     pub time_to_run_per_step: usize,
 }
 pub struct State {
@@ -96,10 +96,15 @@ impl State {
         progress_bar.finish_and_clear();
     }
 
+    fn calculate_step_friendships(&self) -> usize {
+        let total_users = self.users.len();
+        let max_friendships = (total_users * (total_users - 1)) / 2;
+        ((max_friendships as f32) * self.config.friendship_ratio).ceil() as usize
+    }
+
     async fn init_friendships(&mut self) {
-        let amount_of_friendships =
-            ((self.users.len() as f32) * self.config.friendship_ratio).ceil() as usize;
         let amount_of_users = self.users.len();
+        let amount_of_friendships = self.calculate_step_friendships();
 
         let progress_bar = create_progress_bar(
             "Init friendhips".to_string(),
@@ -108,6 +113,7 @@ impl State {
                 .unwrap(),
         );
         progress_bar.tick();
+
         let mut handles = vec![];
         while self.friendships.len() < amount_of_friendships {
             let first_random_user = rand::thread_rng().gen_range(0..amount_of_users);
