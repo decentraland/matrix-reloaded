@@ -60,6 +60,7 @@ impl User<Disconnected> {
     pub async fn new(
         id: String,
         homeserver: String,
+        retry_enabled: bool,
         metrics: Metrics,
     ) -> Option<User<Disconnected>> {
         // init client connection (register + login)
@@ -68,15 +69,17 @@ impl User<Disconnected> {
         let instant = Instant::now();
 
         // in case we are testing against localhost or not https server, we need to setup test cfg, see `Client::homeserver_from_user_id`
-        let client = Client::new_from_user_id_with_config(
-            user_id.clone(),
+        let config = if retry_enabled {
+            ClientConfig::new()
+                .request_config(RequestConfig::new().retry_timeout(Duration::from_secs(30)))
+        } else {
             ClientConfig::new().request_config(
                 RequestConfig::new()
                     .disable_retry()
                     .timeout(Duration::from_secs(30)),
-            ),
-        )
-        .await;
+            )
+        };
+        let client = Client::new_from_user_id_with_config(user_id.clone(), config).await;
         if client.is_err() {
             return None;
         }

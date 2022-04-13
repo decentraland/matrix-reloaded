@@ -1,5 +1,7 @@
 use friendship::{Friendship, FriendshipID};
 use futures::future::join_all;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use metrics::Metrics;
 use rand::prelude::IteratorRandom;
@@ -20,14 +22,16 @@ mod user;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Configuration {
-    pub homeserver_url: String,
-    pub output_dir: String,
-    pub total_steps: usize,
-    pub users_per_step: usize,
-    pub friendship_ratio: f32,
-    pub step_duration_in_secs: usize,
-    pub max_users_to_act_per_tick: usize,
-    pub waiting_period: usize,
+    homeserver_url: String,
+    output_dir: String,
+    total_steps: usize,
+    users_per_step: usize,
+    friendship_ratio: f32,
+    step_duration_in_secs: usize,
+    max_users_to_act_per_tick: usize,
+    waiting_period: usize,
+    retry_request_config: bool,
+    user_creation_retry_attempts: usize,
 }
 
 pub struct State {
@@ -65,8 +69,10 @@ impl State {
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
         let server = self.config.homeserver_url.clone();
+        let retry_enabled = self.config.retry_request_config;
+        let retry_attempts = self.config.user_creation_retry_attempts;
 
-        let mut handles = vec![];
+        let mut handles = FuturesUnordered::new();
 
         let progress_bar = create_progress_bar(
             "Init users".to_string(),
@@ -79,27 +85,37 @@ impl State {
                 let server = server.clone();
                 let metrics = self.metrics.clone();
                 let progress_bar = progress_bar.clone();
+
                 async move {
                     let id = format!("user_{i}_{timestamp}");
-                    let user = User::new(id, server, metrics).await;
+                    for _ in 0..retry_attempts {
+                        let user =
+                            User::new(id.clone(), server.clone(), retry_enabled, metrics.clone())
+                                .await;
 
-                    if let Some(mut user) = user {
-                        if let Some(mut user) = user.register().await {
-                            if let Some(user) = user.login().await {
-                                log::info!("User is now synching: {}", user.id());
-                                progress_bar.inc(1);
-                                return Some(user.sync().await);
+                        if let Some(mut user) = user {
+                            if let Some(mut user) = user.register().await {
+                                if let Some(user) = user.login().await {
+                                    log::info!("User is now synching: {}", user.id());
+                                    progress_bar.inc(1);
+                                    return Some(user.sync().await);
+                                }
                             }
                         }
                     }
+                    log::info!("Couldn't init a user");
+                    progress_bar.inc(1);
                     None
                 }
             }));
         }
 
-        for user in (join_all(handles).await).into_iter().flatten().flatten() {
-            self.users.push(user);
+        while let Some(user) = handles.next().await {
+            if let Ok(Some(user)) = user {
+                self.users.push(user)
+            }
         }
+
         progress_bar.finish_and_clear();
     }
 
@@ -120,7 +136,7 @@ impl State {
         );
         progress_bar.tick();
 
-        let mut handles = vec![];
+        let mut handles = FuturesUnordered::new();
         while self.friendships.len() < amount_of_friendships {
             let mut rng = rand::thread_rng();
             let first_user = self.users.iter().choose(&mut rng).unwrap();
@@ -152,7 +168,7 @@ impl State {
                 }
             }));
         }
-        join_all(handles).await;
+        while (handles.next().await).is_some() {}
         progress_bar.finish_and_clear();
     }
 
@@ -220,7 +236,7 @@ impl State {
                 spinner.inc(1);
             }
 
-            spinner.set_message("Checking all were messages received...");
+            spinner.set_message("Checking all messages were received...");
         }
     }
 
