@@ -120,7 +120,7 @@ impl Metrics {
         ))
     }
 
-    pub fn generate_report(&self, output_dir: String) {
+    pub fn generate_report(&self, execution_id: u128, step: usize, output_dir: &str) {
         let mut http_errors_per_request = self.calculate_http_errors_per_request();
         let mut requests_average_time = self.calculate_requests_average_time();
         let message_delivery_average_time = self.calculate_message_delivery_average_time();
@@ -137,16 +137,29 @@ impl Metrics {
             lost_messages,
         };
 
-        let result = create_dir_all(&output_dir);
+        let result = create_dir_all(output_dir);
         let output_dir = if result.is_err() {
             println!("Couldn't ensure output folder, defaulting to 'output/'");
             create_dir("output").unwrap();
-            "output".to_string()
+            "output"
         } else {
             output_dir
         };
 
-        let path = format!("{}/report_{}.yaml", output_dir, time_now());
+        create_dir(format!("{}/{}", output_dir, execution_id)).unwrap_or_else(|_| {
+            panic!(
+                "could not create dir for current execution {}",
+                execution_id
+            );
+        });
+
+        let path = format!(
+            "{}/{}/report_{}_{}.yaml",
+            output_dir,
+            execution_id,
+            step,
+            time_now()
+        );
         let buffer = File::create(&path).unwrap();
 
         serde_yaml::to_writer(buffer, &report).expect("Couldn't write report to file");

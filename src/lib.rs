@@ -89,9 +89,7 @@ impl State {
                 async move {
                     let id = format!("user_{i}_{timestamp}");
                     for _ in 0..retry_attempts {
-                        let user =
-                            User::new(id.clone(), server.clone(), retry_enabled, metrics.clone())
-                                .await;
+                        let user = User::new(&id, &server, retry_enabled, metrics.clone()).await;
 
                         if let Some(mut user) = user {
                             if let Some(mut user) = user.register().await {
@@ -168,7 +166,11 @@ impl State {
                 }
             }));
         }
+
         while (handles.next().await).is_some() {}
+
+        self.friendships.sort();
+
         progress_bar.finish_and_clear();
     }
 
@@ -188,6 +190,7 @@ impl State {
         let mut rng = rand::thread_rng();
         loop {
             if start.elapsed().ge(&step_duration) {
+                // elapsed time for current step reached, breaking the loop and proceed to next step
                 break;
             }
             let mut handles = vec![];
@@ -241,18 +244,29 @@ impl State {
     }
 
     pub async fn run(&mut self) {
-        println!("{:?}", self.config);
+        println!("{:#?}\n", self.config);
+
+        let execution_id = time_now();
+
         for step in 1..=self.config.total_steps {
             println!("Running step {}", step);
 
+            // step warm up
             self.init_users().await;
             self.init_friendships().await;
+
+            // step running
             self.act().await;
             self.waiting_period().await;
 
             println!("{}", self);
 
-            self.metrics.generate_report(self.config.output_dir.clone());
+            self.metrics
+                .generate_report(execution_id, step, &self.config.output_dir);
+
+            if step < self.config.total_steps {
+                println!();
+            }
         }
     }
 }
