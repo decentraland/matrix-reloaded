@@ -1,6 +1,8 @@
 [package]
 name = "matrix-load-testing-tool"
 version = "0.1.0"
+description = "Matrix load testing tool"
+repository = "https://github.com/decentraland/matrix-load-testing-tool"
 edition = "2021"
 
 [dependencies]
