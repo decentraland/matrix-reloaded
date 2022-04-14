@@ -5,10 +5,11 @@ use matrix_load_testing_tool::{Configuration, State};
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
+    /// Matrix server to be tested
     #[clap(short, long)]
     homeserver: String,
 
-    // folder where reports will be generated
+    /// Folder where reports will be generated
     #[clap(short, long, default_value = "output")]
     output_dir: String,
 }
@@ -20,12 +21,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config = Config::builder()
         .add_source(config::File::with_name("Config"))
-        .set_override("homeserver_url", args.homeserver)
-        .unwrap()
-        .set_override("output_dir", args.output_dir)
-        .unwrap()
-        .build()
-        .unwrap();
+        .set_override("homeserver_url", args.homeserver)?
+        .set_override("output_dir", args.output_dir)?
+        .build()?;
 
     let config = config.try_deserialize::<Configuration>();
     match config {
@@ -37,5 +35,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Couldn't parse config {}", e);
         }
     };
+
     Ok(())
 }
