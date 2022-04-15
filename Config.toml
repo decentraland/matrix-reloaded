@@ -1,7 +1,7 @@
 # Total steps
 total_steps = 2
 # Users to be created per step
-users_per_step = 300
+users_per_step = 100
 # Friendhips (rooms) based on: total possible friendships * friendship ratio
 friendship_ratio = 0.1
 # Step duration where users interact each other
@@ -14,3 +14,7 @@ waiting_period = 30
 retry_request_config = false
 # User creation retry attempts (not related to retry_request_config)
 user_creation_retry_attempts = 5
+# Max throughput allowed for users registration 
+user_creation_throughput = 10
+# Max throughput allowed for room creation 
+room_creation_throughput = 20

@@ -32,6 +32,8 @@ pub struct Configuration {
     waiting_period: usize,
     retry_request_config: bool,
     user_creation_retry_attempts: usize,
+    user_creation_throughput: usize,
+    room_creation_throughput: usize,
 }
 
 pub struct State {
@@ -72,45 +74,32 @@ impl State {
         let retry_enabled = self.config.retry_request_config;
         let retry_attempts = self.config.user_creation_retry_attempts;
 
-        let mut handles = FuturesUnordered::new();
-
         let progress_bar = create_progress_bar(
             "Init users".to_string(),
             (desired_users - actual_users).try_into().unwrap(),
         );
         progress_bar.tick();
 
-        for i in actual_users..desired_users {
-            handles.push(tokio::spawn({
-                let server = server.clone();
-                let metrics = self.metrics.clone();
-                let progress_bar = progress_bar.clone();
+        let range = (actual_users..desired_users).collect::<Vec<usize>>();
 
-                async move {
-                    let id = format!("user_{i}_{timestamp}");
-                    for _ in 0..retry_attempts {
-                        let user = User::new(&id, &server, retry_enabled, metrics.clone()).await;
+        let futures = range.iter().map(|i| {
+            create_user(
+                server.clone(),
+                &progress_bar,
+                self.metrics.clone(),
+                *i,
+                retry_attempts,
+                timestamp,
+                retry_enabled,
+            )
+        });
 
-                        if let Some(mut user) = user {
-                            if let Some(mut user) = user.register().await {
-                                if let Some(user) = user.login().await {
-                                    log::info!("User is now synching: {}", user.id());
-                                    progress_bar.inc(1);
-                                    return Some(user.sync().await);
-                                }
-                            }
-                        }
-                    }
-                    log::info!("Couldn't init a user");
-                    progress_bar.inc(1);
-                    None
-                }
-            }));
-        }
+        let stream_iter = futures::stream::iter(futures);
+        let mut buffered_iter = stream_iter.buffer_unordered(self.config.user_creation_throughput);
 
-        while let Some(user) = handles.next().await {
-            if let Ok(Some(user)) = user {
-                self.users.push(user)
+        while let Some(user) = buffered_iter.next().await {
+            if let Some(user) = user {
+                self.users.push(user);
             }
         }
 
@@ -275,5 +264,36 @@ impl State {
                 println!();
             }
         }
+    }
+}
+
+fn create_user(
+    server: String,
+    progress_bar: &ProgressBar,
+    metrics: Metrics,
+    i: usize,
+    retry_attempts: usize,
+    timestamp: u128,
+    retry_enabled: bool,
+) -> impl futures::Future<Output = Option<User<Synching>>> {
+    let progress_bar = progress_bar.clone();
+    async move {
+        let id = format!("user_{i}_{timestamp}");
+        for _ in 0..retry_attempts {
+            let user = User::new(&id, &server, retry_enabled, metrics.clone()).await;
+
+            if let Some(mut user) = user {
+                if let Some(mut user) = user.register().await {
+                    if let Some(user) = user.login().await {
+                        log::info!("User is now synching: {}", user.id());
+                        progress_bar.inc(1);
+                        return Some(user.sync().await);
+                    }
+                }
+            }
+        }
+        log::info!("Couldn't init a user");
+        progress_bar.inc(1);
+        None
     }
 }
