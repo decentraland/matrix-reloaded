@@ -249,6 +249,7 @@ impl User<Synching> {
 
         let room = match rooms.len() {
             0 => {
+                // if user is not present in any room, return
                 return;
             }
             1 => 0,
