@@ -1,6 +1,5 @@
 use friendship::{Friendship, FriendshipID};
 use futures::future::join_all;
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use metrics::Metrics;
@@ -32,6 +31,8 @@ pub struct Configuration {
     waiting_period: usize,
     retry_request_config: bool,
     user_creation_retry_attempts: usize,
+    user_creation_throughput: usize,
+    room_creation_throughput: usize,
 }
 
 pub struct State {
@@ -72,45 +73,30 @@ impl State {
         let retry_enabled = self.config.retry_request_config;
         let retry_attempts = self.config.user_creation_retry_attempts;
 
-        let mut handles = FuturesUnordered::new();
-
         let progress_bar = create_progress_bar(
             "Init users".to_string(),
             (desired_users - actual_users).try_into().unwrap(),
         );
         progress_bar.tick();
 
-        for i in actual_users..desired_users {
-            handles.push(tokio::spawn({
-                let server = server.clone();
-                let metrics = self.metrics.clone();
-                let progress_bar = progress_bar.clone();
+        let futures = (actual_users..desired_users).map(|i| {
+            create_user(
+                server.clone(),
+                &progress_bar,
+                self.metrics.clone(),
+                i,
+                retry_attempts,
+                timestamp,
+                retry_enabled,
+            )
+        });
 
-                async move {
-                    let id = format!("user_{i}_{timestamp}");
-                    for _ in 0..retry_attempts {
-                        let user = User::new(&id, &server, retry_enabled, metrics.clone()).await;
+        let stream_iter = futures::stream::iter(futures);
+        let mut buffered_iter = stream_iter.buffer_unordered(self.config.user_creation_throughput);
 
-                        if let Some(mut user) = user {
-                            if let Some(mut user) = user.register().await {
-                                if let Some(user) = user.login().await {
-                                    log::info!("User is now synching: {}", user.id());
-                                    progress_bar.inc(1);
-                                    return Some(user.sync().await);
-                                }
-                            }
-                        }
-                    }
-                    log::info!("Couldn't init a user");
-                    progress_bar.inc(1);
-                    None
-                }
-            }));
-        }
-
-        while let Some(user) = handles.next().await {
-            if let Ok(Some(user)) = user {
-                self.users.push(user)
+        while let Some(user) = buffered_iter.next().await {
+            if let Some(user) = user {
+                self.users.push(user);
             }
         }
 
@@ -134,44 +120,40 @@ impl State {
         );
         progress_bar.tick();
 
-        let mut handles = FuturesUnordered::new();
+        let mut futures = vec![];
+
         while self.friendships.len() < amount_of_friendships {
+            let (first_user, second_user) = self.get_random_friendship();
+
+            futures.push(join_users_to_room(first_user, second_user, &progress_bar));
+        }
+
+        let stream_iter = futures::stream::iter(futures);
+        let mut buffered_iter = stream_iter.buffer_unordered(self.config.room_creation_throughput);
+
+        while (buffered_iter.next().await).is_some() {}
+
+        self.friendships.sort();
+
+        progress_bar.finish_and_clear();
+    }
+
+    fn get_random_friendship(&mut self) -> (&User<Synching>, &User<Synching>) {
+        loop {
             let mut rng = rand::thread_rng();
             let first_user = self.users.iter().choose(&mut rng).unwrap();
             let second_user = self.users.iter().choose(&mut rng).unwrap();
             if first_user.id() == second_user.id() {
                 continue;
             }
-
             let friendship = Friendship::from_users(first_user, second_user);
-
             if self.friendships.contains(&friendship) {
                 continue;
             }
+            self.friendships.push(friendship);
 
-            handles.push(tokio::spawn({
-                self.friendships.push(friendship);
-                let mut first_user = first_user.clone();
-                let mut second_user = second_user.clone();
-                let progress_bar = progress_bar.clone();
-                async move {
-                    let room_created = first_user.create_room().await;
-                    if let Some(room_id) = room_created {
-                        first_user.join_room(&room_id).await;
-                        second_user.join_room(&room_id).await;
-                    } else {
-                        log::info!("User {} couldn't create a room", first_user.id());
-                    }
-                    progress_bar.inc(1);
-                }
-            }));
+            break (first_user, second_user);
         }
-
-        while (handles.next().await).is_some() {}
-
-        self.friendships.sort();
-
-        progress_bar.finish_and_clear();
     }
 
     async fn act(&mut self) {
@@ -275,5 +257,60 @@ impl State {
                 println!();
             }
         }
+    }
+}
+
+fn join_users_to_room(
+    first_user: &User<Synching>,
+    second_user: &User<Synching>,
+    progress_bar: &ProgressBar,
+) -> impl futures::Future<Output = ()> {
+    let mut first_user = first_user.clone();
+    let mut second_user = second_user.clone();
+    let progress_bar = progress_bar.clone();
+
+    async move {
+        let room_created = first_user.create_room().await;
+        if let Some(room_id) = room_created {
+            first_user.join_room(&room_id).await;
+            second_user.join_room(&room_id).await;
+        } else {
+            //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
+            log::info!("User {} couldn't create a room", first_user.id());
+        }
+        progress_bar.inc(1);
+    }
+}
+
+fn create_user(
+    server: String,
+    progress_bar: &ProgressBar,
+    metrics: Metrics,
+    i: usize,
+    retry_attempts: usize,
+    timestamp: u128,
+    retry_enabled: bool,
+) -> impl futures::Future<Output = Option<User<Synching>>> {
+    let progress_bar = progress_bar.clone();
+    async move {
+        let id = format!("user_{i}_{timestamp}");
+        for _ in 0..retry_attempts {
+            let user = User::new(&id, &server, retry_enabled, metrics.clone()).await;
+
+            if let Some(mut user) = user {
+                if let Some(mut user) = user.register().await {
+                    if let Some(user) = user.login().await {
+                        log::info!("User is now synching: {}", user.id());
+                        progress_bar.inc(1);
+                        return Some(user.sync().await);
+                    }
+                }
+            }
+        }
+
+        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
+        log::info!("Couldn't init a user");
+        progress_bar.inc(1);
+        None
     }
 }
