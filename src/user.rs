@@ -58,8 +58,8 @@ pub enum UserRequest {
 
 impl User<Disconnected> {
     pub async fn new(
-        id: String,
-        homeserver: String,
+        id: &str,
+        homeserver: &str,
         retry_enabled: bool,
         metrics: Metrics,
     ) -> Option<User<Disconnected>> {
@@ -249,6 +249,7 @@ impl User<Synching> {
 
         let room = match rooms.len() {
             0 => {
+                // if user is not present in any room, return
                 return;
             }
             1 => 0,

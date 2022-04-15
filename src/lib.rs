@@ -89,9 +89,7 @@ impl State {
                 async move {
                     let id = format!("user_{i}_{timestamp}");
                     for _ in 0..retry_attempts {
-                        let user =
-                            User::new(id.clone(), server.clone(), retry_enabled, metrics.clone())
-                                .await;
+                        let user = User::new(&id, &server, retry_enabled, metrics.clone()).await;
 
                         if let Some(mut user) = user {
                             if let Some(mut user) = user.register().await {
@@ -168,7 +166,11 @@ impl State {
                 }
             }));
         }
+
         while (handles.next().await).is_some() {}
+
+        self.friendships.sort();
+
         progress_bar.finish_and_clear();
     }
 
@@ -188,12 +190,13 @@ impl State {
         let mut rng = rand::thread_rng();
         loop {
             if start.elapsed().ge(&step_duration) {
+                // elapsed time for current step reached, breaking the loop and proceed to next step
                 break;
             }
             let mut handles = vec![];
 
             for user in self.users.iter().choose_multiple(&mut rng, users_to_act) {
-                let user = user.clone();
+                let user = user;
                 handles.push(tokio::spawn({
                     let mut user = user.clone();
                     let progress_bar = progress_bar.clone();
@@ -205,6 +208,7 @@ impl State {
             }
             join_all(handles).await;
 
+            // waits for a second before the next iteration
             one_sec_interval.tick().await;
         }
         progress_bar.finish_and_clear();
@@ -222,16 +226,21 @@ impl State {
         let waiting_time = Duration::from_secs(self.config.waiting_period as u64);
         let one_sec = Duration::from_secs(1);
         let start = Instant::now();
+
         while !self.metrics.all_messages_received() {
             if start.elapsed().ge(&waiting_time) {
+                // waiting time finished, finishing step
                 break;
             }
+
             let wait_one_sec = Instant::now();
             spinner.set_message("Waiting for messages...");
             loop {
                 if wait_one_sec.elapsed().ge(&one_sec) {
+                    // waiting time finished, finishing step
                     break;
                 }
+
                 sleep(Duration::from_millis(100));
                 spinner.inc(1);
             }
@@ -241,18 +250,30 @@ impl State {
     }
 
     pub async fn run(&mut self) {
-        println!("{:?}", self.config);
+        println!("{:#?}\n", self.config);
+
+        let execution_id = time_now();
+
         for step in 1..=self.config.total_steps {
             println!("Running step {}", step);
 
+            // step warm up
             self.init_users().await;
             self.init_friendships().await;
+
+            // step running
             self.act().await;
             self.waiting_period().await;
 
             println!("{}", self);
 
-            self.metrics.generate_report(self.config.output_dir.clone());
+            self.metrics
+                .generate_report(execution_id, step, &self.config.output_dir);
+
+            // print new line in between steps
+            if step < self.config.total_steps {
+                println!();
+            }
         }
     }
 }
