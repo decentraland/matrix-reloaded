@@ -1,6 +1,5 @@
 use friendship::{Friendship, FriendshipID};
 use futures::future::join_all;
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use metrics::Metrics;
@@ -123,44 +122,40 @@ impl State {
         );
         progress_bar.tick();
 
-        let mut handles = FuturesUnordered::new();
+        let mut futures = vec![];
+
         while self.friendships.len() < amount_of_friendships {
+            let (first_user, second_user) = self.get_random_friendship();
+
+            futures.push(join_users_to_room(first_user, second_user, &progress_bar));
+        }
+
+        let stream_iter = futures::stream::iter(futures);
+        let mut buffered_iter = stream_iter.buffer_unordered(self.config.room_creation_throughput);
+
+        while (buffered_iter.next().await).is_some() {}
+
+        self.friendships.sort();
+
+        progress_bar.finish_and_clear();
+    }
+
+    fn get_random_friendship(&mut self) -> (&User<Synching>, &User<Synching>) {
+        loop {
             let mut rng = rand::thread_rng();
             let first_user = self.users.iter().choose(&mut rng).unwrap();
             let second_user = self.users.iter().choose(&mut rng).unwrap();
             if first_user.id() == second_user.id() {
                 continue;
             }
-
             let friendship = Friendship::from_users(first_user, second_user);
-
             if self.friendships.contains(&friendship) {
                 continue;
             }
+            self.friendships.push(friendship);
 
-            handles.push(tokio::spawn({
-                self.friendships.push(friendship);
-                let mut first_user = first_user.clone();
-                let mut second_user = second_user.clone();
-                let progress_bar = progress_bar.clone();
-                async move {
-                    let room_created = first_user.create_room().await;
-                    if let Some(room_id) = room_created {
-                        first_user.join_room(&room_id).await;
-                        second_user.join_room(&room_id).await;
-                    } else {
-                        log::info!("User {} couldn't create a room", first_user.id());
-                    }
-                    progress_bar.inc(1);
-                }
-            }));
+            break (first_user, second_user);
         }
-
-        while (handles.next().await).is_some() {}
-
-        self.friendships.sort();
-
-        progress_bar.finish_and_clear();
     }
 
     async fn act(&mut self) {
@@ -265,6 +260,29 @@ impl State {
             }
         }
     }
+}
+
+fn join_users_to_room(
+    first_user: &User<Synching>,
+    second_user: &User<Synching>,
+    progress_bar: &ProgressBar,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn({
+        let mut first_user = first_user.clone();
+        let mut second_user = second_user.clone();
+        let progress_bar = progress_bar.clone();
+
+        async move {
+            let room_created = first_user.create_room().await;
+            if let Some(room_id) = room_created {
+                first_user.join_room(&room_id).await;
+                second_user.join_room(&room_id).await;
+            } else {
+                log::info!("User {} couldn't create a room", first_user.id());
+            }
+            progress_bar.inc(1);
+        }
+    })
 }
 
 fn create_user(
