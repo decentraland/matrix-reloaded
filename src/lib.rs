@@ -79,14 +79,12 @@ impl State {
         );
         progress_bar.tick();
 
-        let range = (actual_users..desired_users).collect::<Vec<usize>>();
-
-        let futures = range.iter().map(|i| {
+        let futures = (actual_users..desired_users).map(|i| {
             create_user(
                 server.clone(),
                 &progress_bar,
                 self.metrics.clone(),
-                *i,
+                i,
                 retry_attempts,
                 timestamp,
                 retry_enabled,
