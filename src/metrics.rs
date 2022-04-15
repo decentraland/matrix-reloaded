@@ -1,9 +1,9 @@
 use crate::events::Event;
 use crate::{time::time_now, user::UserRequest};
 use futures::lock::Mutex;
+use matrix_sdk::ruma::api::client::uiaa::UiaaResponse;
 use matrix_sdk::HttpError;
 use serde_with::serde_as;
-
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::{
@@ -205,17 +205,13 @@ fn check_and_swap_all_messages_received(
 fn get_error_code(e: &HttpError) -> String {
     use matrix_sdk::ruma::api::error::*;
     match e {
-        HttpError::ClientApi(FromHttpResponseError::Http(ServerError::Known(e))) => {
+        HttpError::ClientApi(FromHttpResponseError::Server(ServerError::Known(e))) => {
             e.status_code.to_string()
         }
         HttpError::Server(status_code) => status_code.to_string(),
-        HttpError::UiaaError(FromHttpResponseError::Http(ServerError::Known(e))) => match e {
-            matrix_sdk::ruma::api::client::r0::uiaa::UiaaResponse::AuthResponse(e) => {
-                e.auth_error.as_ref().unwrap().message.clone()
-            }
-            matrix_sdk::ruma::api::client::r0::uiaa::UiaaResponse::MatrixError(e) => {
-                e.kind.to_string()
-            }
+        HttpError::UiaaError(FromHttpResponseError::Server(ServerError::Known(e))) => match e {
+            UiaaResponse::AuthResponse(e) => e.auth_error.as_ref().unwrap().message.clone(),
+            UiaaResponse::MatrixError(e) => e.kind.to_string(),
             _ => e.to_string(),
         },
         _ => e.to_string(),

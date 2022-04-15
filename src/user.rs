@@ -1,24 +1,35 @@
+use crate::events::Event;
+use crate::text::get_random_string;
+use matrix_sdk::config::RequestConfig;
 use matrix_sdk::room::Room;
 use matrix_sdk::ruma::api::client::error::ErrorKind;
-use matrix_sdk::ruma::api::client::r0::account::register;
-use matrix_sdk::ruma::api::client::r0::room::create_room;
-use matrix_sdk::ruma::api::client::r0::uiaa::{AuthData, Dummy, UiaaResponse};
-use matrix_sdk::ruma::api::error::{FromHttpResponseError::*, ServerError::*};
-use matrix_sdk::ruma::events::room::message::MessageEventContent;
-use matrix_sdk::ruma::events::{AnyMessageEventContent, SyncMessageEvent};
+use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy, UiaaResponse};
+use matrix_sdk::ruma::api::error::FromHttpResponseError::Server;
+use matrix_sdk::ruma::api::error::ServerError::Known;
+use matrix_sdk::ruma::{
+    api::client::{
+        account::register::v3::Request as RegistrationRequest,
+        room::create_room::v3::Request as CreateRoomRequest,
+    },
+    assign,
+};
+use matrix_sdk::ruma::{RoomId, UserId};
+use matrix_sdk::Client;
 use matrix_sdk::HttpError::UiaaError;
-use matrix_sdk::{Client, ClientConfig, RequestConfig, SyncSettings};
+use matrix_sdk::{
+    config::SyncSettings,
+    ruma::events::{
+        room::message::{OriginalSyncRoomMessageEvent, RoomMessageEventContent},
+        AnyMessageLikeEventContent,
+    },
+};
 use rand::Rng;
+use regex::Regex;
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
-
-use matrix_sdk::ruma::{assign, RoomId, UserId};
-
-use crate::events::Event;
-use crate::text::get_random_string;
 
 const PASSWORD: &str = "asdfasdf";
 
@@ -27,20 +38,20 @@ pub struct Registered;
 pub struct LoggedIn;
 #[derive(Clone)]
 pub struct Synching {
-    rooms: Arc<Mutex<Vec<RoomId>>>,
+    rooms: Arc<Mutex<Vec<Box<RoomId>>>>,
 }
 
 #[derive(Clone)]
 pub struct User<State> {
-    id: UserId,
+    id: Box<UserId>,
     client: Arc<tokio::sync::Mutex<Client>>,
     tx: Sender<Event>,
     state: State,
 }
 
 impl<State> User<State> {
-    pub fn id(&self) -> UserId {
-        self.id.clone()
+    pub fn id(&self) -> &UserId {
+        self.id.as_ref()
     }
 
     pub async fn send(&self, event: Event) {
@@ -67,24 +78,28 @@ impl User<Disconnected> {
         retry_enabled: bool,
         tx: Sender<Event>,
     ) -> Option<User<Disconnected>> {
-        // init client connection (register + login)
-        let user_id = UserId::try_from(format!("@{id}:{homeserver}")).unwrap();
+        // TODO: check which protocol we want to use: http or https (defaulting to https)
+        let (homeserver_no_protocol, homeserver_url) = get_homeserver_url(homeserver, None);
+
+        let user_id = UserId::parse(format!("@{id}:{homeserver_no_protocol}").as_str()).unwrap();
 
         let instant = Instant::now();
 
         log::info!("Attempt to create a client with id {}", user_id);
-        // in case we are testing against localhost or not https server, we need to setup test cfg, see `Client::homeserver_from_user_id`
-        let config = if retry_enabled {
-            ClientConfig::new()
-                .request_config(RequestConfig::new().retry_timeout(Duration::from_secs(30)))
+
+        let request_config = if retry_enabled {
+            RequestConfig::new().retry_timeout(Duration::from_secs(30))
         } else {
-            ClientConfig::new().request_config(
-                RequestConfig::new()
-                    .disable_retry()
-                    .timeout(Duration::from_secs(30)),
-            )
+            RequestConfig::new()
+                .disable_retry()
+                .timeout(Duration::from_secs(30))
         };
-        let client = Client::new_from_user_id_with_config(user_id.clone(), config).await;
+
+        let client = Client::builder()
+            .request_config(request_config)
+            .homeserver_url(homeserver_url)
+            .build()
+            .await;
         if client.is_err() {
             log::info!("Failed to create client");
             return None;
@@ -107,7 +122,7 @@ impl User<Disconnected> {
     pub async fn register(&mut self) -> Option<User<Registered>> {
         let instant = Instant::now();
 
-        let req = assign!(register::Request::new(), {
+        let req = assign!(RegistrationRequest::new(), {
             username: Some(self.id.localpart()),
             password: Some(PASSWORD),
             auth: Some(AuthData::Dummy(Dummy::new()))
@@ -131,7 +146,7 @@ impl User<Disconnected> {
             }
             Err(e) => {
                 // if ID is already taken, proceed as Registered
-                if let UiaaError(Http(Known(UiaaResponse::MatrixError(e)))) = e {
+                if let UiaaError(Server(Known(UiaaResponse::MatrixError(e)))) = e {
                     if e.kind == ErrorKind::UserInUse {
                         log::info!("Client already registered, proceed to Login {}", self.id());
                         let user = User::new(
@@ -201,22 +216,11 @@ impl User<LoggedIn> {
             .register_event_handler({
                 let tx = self.tx.clone();
                 let user_id = self.id.clone();
-                move |ev: SyncMessageEvent<MessageEventContent>, room: Room| {
+                move |ev, room| {
                     let tx = tx.clone();
                     let user_id = user_id.clone();
                     async move {
-                        if ev.sender.localpart() == user_id.localpart() {
-                            return;
-                        }
-                        log::info!(
-                            "User {} received a message from room {} and sent by {}",
-                            user_id,
-                            room.room_id(),
-                            ev.sender
-                        );
-                        tx.send(Event::MessageReceived(ev.event_id.to_string()))
-                            .await
-                            .expect("Receiver dropped");
+                        on_room_message(ev, room, tx, user_id).await;
                     }
                 }
             })
@@ -242,11 +246,11 @@ impl User<LoggedIn> {
 }
 
 impl User<Synching> {
-    pub async fn create_room(&mut self) -> Option<RoomId> {
+    pub async fn create_room(&mut self) -> Option<Box<RoomId>> {
         let client = self.client.lock().await;
 
         let instant = Instant::now();
-        let request = create_room::Request::new();
+        let request = CreateRoomRequest::new();
         let response = client.create_room(request).await;
         match response {
             Ok(ref response) => {
@@ -297,28 +301,110 @@ impl User<Synching> {
         };
 
         let room_id = &rooms[room];
-        let content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(
+        let content = AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(
             get_random_string(),
         ));
         let instant = Instant::now();
-        let response = client.room_send(room_id, content, None).await;
-
-        match response {
-            Ok(response) => {
-                self.send(Event::RequestDuration((
-                    UserRequest::SendMessage,
-                    instant.elapsed(),
-                )))
-                .await;
-
-                self.send(Event::MessageSent(response.event_id.to_string()))
+        if let Some(room) = client.get_joined_room(room_id) {
+            let response = room.send(content, None).await;
+            match response {
+                Ok(response) => {
+                    self.send(Event::RequestDuration((
+                        UserRequest::SendMessage,
+                        instant.elapsed(),
+                    )))
                     .await;
-            }
-            Err(e) => {
-                if let matrix_sdk::Error::Http(e) = e {
-                    self.send(Event::Error((UserRequest::SendMessage, e))).await;
+
+                    self.send(Event::MessageSent(response.event_id.to_string()))
+                        .await;
+                }
+                Err(e) => {
+                    if let matrix_sdk::Error::Http(e) = e {
+                        self.send(Event::Error((UserRequest::SendMessage, e))).await;
+                    }
                 }
             }
         }
+    }
+}
+
+async fn on_room_message(
+    event: OriginalSyncRoomMessageEvent,
+    room: Room,
+    sender: Sender<Event>,
+    user_id: Box<UserId>,
+) {
+    if let Room::Joined(room) = room {
+        if event.sender.localpart() == user_id.localpart() {
+            return;
+        }
+        sender
+            .send(Event::MessageReceived(event.event_id.to_string()))
+            .await
+            .expect("Receiver dropped");
+        log::info!(
+            "User {} received a message from room {} and sent by {}",
+            user_id,
+            room.room_id(),
+            event.sender
+        );
+    }
+}
+
+// /// This function returns homeserver domain and url, ex:
+// ///  - get_homeserver_url("matrix.domain.com") => ("matrix.domain.com", "https://matrix.domain.com")
+fn get_homeserver_url<'a>(homeserver: &'a str, protocol: Option<&'a str>) -> (&'a str, String) {
+    let regex = Regex::new(r"https?://").unwrap();
+    if regex.is_match(homeserver) {
+        let parts: Vec<&str> = regex.splitn(homeserver, 2).collect();
+        (parts[1], homeserver.to_string())
+    } else {
+        let protocol = protocol.unwrap_or("https");
+        (homeserver, format!("{protocol}://{homeserver}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::user::*;
+    #[test]
+    fn homeserver_arg_can_start_with_https() {
+        let homeserver_arg = "https://matrix.domain.com";
+        assert_eq!(
+            ("matrix.domain.com", homeserver_arg.to_string()),
+            get_homeserver_url(homeserver_arg, None)
+        );
+    }
+
+    #[test]
+    fn homeserver_arg_can_start_with_http() {
+        let homeserver_arg = "http://matrix.domain.com";
+
+        assert_eq!(
+            ("matrix.domain.com", homeserver_arg.to_string()),
+            get_homeserver_url(homeserver_arg, None)
+        );
+    }
+
+    #[test]
+    fn homeserver_arg_can_start_without_protocol() {
+        let homeserver_arg = "matrix.domain.com";
+        let expected_homeserver_url = "https://matrix.domain.com";
+
+        assert_eq!(
+            (homeserver_arg, expected_homeserver_url.to_string()),
+            get_homeserver_url(homeserver_arg, None)
+        );
+    }
+
+    #[test]
+    fn homeserver_should_return_specified_protocol() {
+        let homeserver_arg = "matrix.domain.com";
+        let expected_homeserver_url = "http://matrix.domain.com";
+
+        assert_eq!(
+            (homeserver_arg, expected_homeserver_url.to_string()),
+            get_homeserver_url(homeserver_arg, Some("http"))
+        );
     }
 }
