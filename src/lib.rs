@@ -264,7 +264,7 @@ fn join_users_to_room(
     first_user: &User<Synching>,
     second_user: &User<Synching>,
     progress_bar: &ProgressBar,
-) {
+) -> impl futures::Future<Output = ()> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
     let progress_bar = progress_bar.clone();
