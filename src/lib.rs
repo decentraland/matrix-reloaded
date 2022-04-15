@@ -264,23 +264,22 @@ fn join_users_to_room(
     first_user: &User<Synching>,
     second_user: &User<Synching>,
     progress_bar: &ProgressBar,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn({
-        let mut first_user = first_user.clone();
-        let mut second_user = second_user.clone();
-        let progress_bar = progress_bar.clone();
+) {
+    let mut first_user = first_user.clone();
+    let mut second_user = second_user.clone();
+    let progress_bar = progress_bar.clone();
 
-        async move {
-            let room_created = first_user.create_room().await;
-            if let Some(room_id) = room_created {
-                first_user.join_room(&room_id).await;
-                second_user.join_room(&room_id).await;
-            } else {
-                log::info!("User {} couldn't create a room", first_user.id());
-            }
-            progress_bar.inc(1);
+    async move {
+        let room_created = first_user.create_room().await;
+        if let Some(room_id) = room_created {
+            first_user.join_room(&room_id).await;
+            second_user.join_room(&room_id).await;
+        } else {
+            //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
+            log::info!("User {} couldn't create a room", first_user.id());
         }
-    })
+        progress_bar.inc(1);
+    }
 }
 
 fn create_user(
@@ -308,6 +307,8 @@ fn create_user(
                 }
             }
         }
+
+        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
         log::info!("Couldn't init a user");
         progress_bar.inc(1);
         None
