@@ -196,7 +196,7 @@ impl State {
             let mut handles = vec![];
 
             for user in self.users.iter().choose_multiple(&mut rng, users_to_act) {
-                let user = user.clone();
+                let user = user;
                 handles.push(tokio::spawn({
                     let mut user = user.clone();
                     let progress_bar = progress_bar.clone();
@@ -208,6 +208,7 @@ impl State {
             }
             join_all(handles).await;
 
+            // waits for a second before the next iteration
             one_sec_interval.tick().await;
         }
         progress_bar.finish_and_clear();
@@ -225,16 +226,21 @@ impl State {
         let waiting_time = Duration::from_secs(self.config.waiting_period as u64);
         let one_sec = Duration::from_secs(1);
         let start = Instant::now();
+
         while !self.metrics.all_messages_received() {
             if start.elapsed().ge(&waiting_time) {
+                // waiting time finished, finishing step
                 break;
             }
+
             let wait_one_sec = Instant::now();
             spinner.set_message("Waiting for messages...");
             loop {
                 if wait_one_sec.elapsed().ge(&one_sec) {
+                    // waiting time finished, finishing step
                     break;
                 }
+
                 sleep(Duration::from_millis(100));
                 spinner.inc(1);
             }
