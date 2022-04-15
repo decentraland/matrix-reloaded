@@ -264,6 +264,7 @@ impl State {
             self.metrics
                 .generate_report(execution_id, step, &self.config.output_dir);
 
+            // print new line in between steps
             if step < self.config.total_steps {
                 println!();
             }

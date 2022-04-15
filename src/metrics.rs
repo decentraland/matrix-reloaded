@@ -5,7 +5,7 @@ use serde_with::serde_as;
 use std::{
     cmp::Reverse,
     collections::HashMap,
-    fs::{create_dir, create_dir_all, File},
+    fs::{create_dir_all, File},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -137,21 +137,17 @@ impl Metrics {
             lost_messages,
         };
 
-        let result = create_dir_all(output_dir);
+        let result = create_dir_all(format!("{}/{}", output_dir, execution_id));
         let output_dir = if result.is_err() {
-            println!("Couldn't ensure output folder, defaulting to 'output/'");
-            create_dir("output").unwrap();
+            println!(
+                "Couldn't ensure output folder, defaulting to 'output/{}'",
+                execution_id
+            );
+            create_dir_all(format!("output/{}", execution_id)).unwrap();
             "output"
         } else {
             output_dir
         };
-
-        create_dir(format!("{}/{}", output_dir, execution_id)).unwrap_or_else(|_| {
-            panic!(
-                "could not create dir for current execution {}",
-                execution_id
-            );
-        });
 
         let path = format!(
             "{}/{}/report_{}_{}.yaml",
