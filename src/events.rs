@@ -8,4 +8,6 @@ pub enum Event {
     MessageSent(String),
     MessageReceived(String),
     RequestDuration((UserRequest, Duration)),
+    AllMessagesSent,
+    Finish,
 }

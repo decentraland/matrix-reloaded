@@ -4,14 +4,15 @@ use futures::lock::Mutex;
 use matrix_sdk::HttpError;
 use serde_with::serde_as;
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::{
     cmp::Reverse,
     collections::HashMap,
     fs::{create_dir_all, File},
-    sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::Receiver;
 
 #[derive(Default)]
 struct MessageTimes {
@@ -20,125 +21,43 @@ struct MessageTimes {
 }
 
 pub struct Metrics {
-    http_errors: Arc<Mutex<Vec<(UserRequest, HttpError)>>>,
-    request_times: Arc<Mutex<Vec<(UserRequest, Duration)>>>,
-    messages: Arc<Mutex<HashMap<String, MessageTimes>>>,
+    all_messages_received: Arc<AtomicBool>,
+    receiver: Arc<Mutex<Receiver<Event>>>,
 }
 
 #[serde_as]
 #[derive(serde::Serialize, Default)]
-struct Report {
+pub struct Report {
     requests_average_time: Vec<(UserRequest, u128)>,
     http_errors_per_request: Vec<(String, usize)>,
     message_delivery_average_time: u128,
     lost_messages: usize,
 }
 
-impl Metrics {
-    pub fn new() -> (Self, Sender<Event>) {
-        let http_errors: Arc<Mutex<Vec<(UserRequest, HttpError)>>> = Arc::new(Mutex::new(vec![]));
-        let request_times: Arc<Mutex<Vec<(UserRequest, Duration)>>> = Arc::new(Mutex::new(vec![]));
-        let messages: Arc<Mutex<HashMap<String, MessageTimes>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-
-        let (tx, rx) = mpsc::channel::<Event>(100);
-        let receiver = Arc::new(Mutex::new(rx));
-
-        tokio::spawn(read_events(
-            receiver,
-            http_errors.clone(),
-            request_times.clone(),
-            messages.clone(),
-        ));
-        (
-            Self {
-                http_errors,
-                request_times,
-                messages,
-            },
-            tx,
-        )
-    }
-
-    async fn calculate_requests_average_time(&self) -> Vec<(UserRequest, u128)> {
-        let request_times = self.request_times.lock().await;
-        request_times
-            .iter()
-            .fold(
-                HashMap::<UserRequest, Vec<u128>>::new(),
-                |mut map, (request, duration)| {
-                    map.entry(request.clone())
-                        .or_default()
-                        .push(duration.as_millis());
-                    map
-                },
-            )
-            .iter()
-            .map(|(request, times)| {
-                (
-                    request.clone(),
-                    times.iter().sum::<u128>() / (times.len() as u128),
-                )
-            })
-            .collect()
-    }
-
-    async fn calculate_message_delivery_average_time(&self) -> u128 {
-        let messages = self.messages.lock().await;
-        let total = messages.iter().fold(0, |total, (_, times)| {
-            if let Some(sent) = times.sent {
-                if let Some(received) = times.received {
-                    return total + (received.duration_since(sent)).as_millis();
-                }
-            }
-            total
-        });
-
-        total / (messages.len() as u128)
-    }
-
-    async fn calculate_lost_messages(&self) -> usize {
-        self.messages
-            .lock()
-            .await
-            .iter()
-            .filter(|(_, times)| times.received.is_none())
-            .count()
-    }
-
-    pub async fn all_messages_received(&self) -> bool {
-        self.calculate_lost_messages().await == 0
-    }
-
-    async fn calculate_http_errors_per_request(&self) -> Vec<(String, usize)> {
-        Vec::from_iter(self.http_errors.lock().await.iter().fold(
-            HashMap::<String, usize>::new(),
-            |mut map, (request_type, e)| {
-                let error_code = get_error_code(e);
-                *map.entry(format!("{:?}:{:?}", request_type.clone(), error_code))
-                    .or_default() += 1;
-                map
-            },
-        ))
-    }
-
-    pub async fn generate_report(&self, execution_id: u128, step: usize, output_dir: &str) {
-        let mut http_errors_per_request = self.calculate_http_errors_per_request().await;
-        let mut requests_average_time = self.calculate_requests_average_time().await;
-        let message_delivery_average_time = self.calculate_message_delivery_average_time().await;
+impl Report {
+    fn from(
+        http_errors: &[(UserRequest, HttpError)],
+        request_times: &[(UserRequest, Duration)],
+        messages: &HashMap<String, MessageTimes>,
+    ) -> Self {
+        let mut http_errors_per_request = calculate_http_errors_per_request(http_errors);
+        let mut requests_average_time = calculate_requests_average_time(request_times);
+        let message_delivery_average_time = calculate_message_delivery_average_time(messages);
 
         requests_average_time.sort_unstable_by_key(|(_, time)| Reverse(*time));
         http_errors_per_request.sort_unstable_by_key(|(_, count)| Reverse(*count));
 
-        let lost_messages = self.calculate_lost_messages().await;
+        let lost_messages = calculate_lost_messages(messages);
 
-        let report = Report {
+        Self {
             requests_average_time,
-            message_delivery_average_time,
             http_errors_per_request,
+            message_delivery_average_time,
             lost_messages,
-        };
+        }
+    }
 
+    pub fn generate_report(&self, execution_id: u128, step: usize, output_dir: &str) {
         let result = create_dir_all(format!("{}/{}", output_dir, execution_id));
         let output_dir = if result.is_err() {
             println!(
@@ -160,43 +79,126 @@ impl Metrics {
         );
         let buffer = File::create(&path).unwrap();
 
-        serde_yaml::to_writer(buffer, &report).expect("Couldn't write report to file");
+        serde_yaml::to_writer(buffer, &self).expect("Couldn't write report to file");
         println!("Report generated: {}", path);
     }
 }
 
+impl Metrics {
+    pub fn new(receiver: Receiver<Event>) -> Self {
+        Self {
+            all_messages_received: Arc::new(AtomicBool::default()),
+            receiver: Arc::new(Mutex::new(receiver)),
+        }
+    }
+
+    pub async fn all_messages_received(&self) -> bool {
+        self.all_messages_received
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+    pub fn run(&self) -> tokio::task::JoinHandle<Report> {
+        tokio::spawn(read_events(
+            self.receiver.clone(),
+            self.all_messages_received.clone(),
+        ))
+    }
+}
+
+fn calculate_requests_average_time(
+    request_times: &[(UserRequest, Duration)],
+) -> Vec<(UserRequest, u128)> {
+    request_times
+        .iter()
+        .fold(
+            HashMap::<UserRequest, Vec<u128>>::new(),
+            |mut map, (request, duration)| {
+                map.entry(request.clone())
+                    .or_default()
+                    .push(duration.as_millis());
+                map
+            },
+        )
+        .iter()
+        .map(|(request, times)| {
+            (
+                request.clone(),
+                times.iter().sum::<u128>() / (times.len() as u128),
+            )
+        })
+        .collect()
+}
+
+fn calculate_message_delivery_average_time(messages: &HashMap<String, MessageTimes>) -> u128 {
+    let total = messages.iter().fold(0, |total, (_, times)| {
+        if let Some(sent) = times.sent {
+            if let Some(received) = times.received {
+                return total + (received.duration_since(sent)).as_millis();
+            }
+        }
+        total
+    });
+
+    total / (messages.len() as u128)
+}
+
+fn calculate_lost_messages(messages: &HashMap<String, MessageTimes>) -> usize {
+    messages
+        .iter()
+        .filter(|(_, times)| times.received.is_none())
+        .count()
+}
+
 async fn read_events(
     receiver: Arc<Mutex<Receiver<Event>>>,
-    http_errors: Arc<Mutex<Vec<(UserRequest, HttpError)>>>,
-    request_times: Arc<Mutex<Vec<(UserRequest, Duration)>>>,
-    messages: Arc<Mutex<HashMap<String, MessageTimes>>>,
-) {
-    let mut receiver = receiver.lock().await;
+    all_messages_received: Arc<AtomicBool>,
+) -> Report {
+    let mut http_errors: Vec<(UserRequest, HttpError)> = vec![];
+    let mut request_times: Vec<(UserRequest, Duration)> = vec![];
+    let mut messages: HashMap<String, MessageTimes> = HashMap::new();
+
+    let mut finishing_phase = false;
+
+    let mut rec = receiver.lock().await;
+
     loop {
-        match receiver.recv().await {
+        match rec.recv().await {
             Some(e) => {
                 log::info!("Event received {:?}", e);
                 match e {
-                    Event::Error(e) => http_errors.lock().await.push(e),
+                    Event::Error(e) => {
+                        http_errors.push(e);
+                    }
                     Event::MessageSent(message_id) => {
-                        messages.lock().await.entry(message_id).or_default().sent =
-                            Some(Instant::now())
+                        messages.entry(message_id).or_default().sent = Some(Instant::now());
                     }
                     Event::MessageReceived(message_id) => {
-                        messages
-                            .lock()
-                            .await
-                            .entry(message_id)
-                            .or_default()
-                            .received = Some(Instant::now())
+                        messages.entry(message_id).or_default().received = Some(Instant::now());
+                        if finishing_phase {
+                            check_and_swap_all_messages_received(&messages, &all_messages_received);
+                        }
                     }
-                    Event::RequestDuration(request) => request_times.lock().await.push(request),
+                    Event::RequestDuration(request) => {
+                        request_times.push(request);
+                    }
+                    Event::AllMessagesSent => {
+                        finishing_phase = true;
+                    }
+                    Event::Finish => break Report::from(&http_errors, &request_times, &messages),
                 }
             }
             None => {
                 log::info!("Failed to receive an event through the mpsc chanel.");
             }
         }
+    }
+}
+
+fn check_and_swap_all_messages_received(
+    messages: &HashMap<String, MessageTimes>,
+    all_messages_received: &AtomicBool,
+) {
+    if calculate_lost_messages(messages) == 0 {
+        all_messages_received.swap(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -218,4 +220,18 @@ fn get_error_code(e: &HttpError) -> String {
         },
         _ => e.to_string(),
     }
+}
+
+fn calculate_http_errors_per_request(
+    http_errors: &[(UserRequest, HttpError)],
+) -> Vec<(String, usize)> {
+    Vec::from_iter(http_errors.iter().fold(
+        HashMap::<String, usize>::new(),
+        |mut map, (request_type, e)| {
+            let error_code = get_error_code(e);
+            *map.entry(format!("{:?}:{:?}", request_type.clone(), error_code))
+                .or_default() += 1;
+            map
+        },
+    ))
 }

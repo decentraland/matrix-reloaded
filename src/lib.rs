@@ -10,7 +10,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 use text::create_progress_bar;
 use time::time_now;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{self, Sender};
 use tokio::time::interval;
 use user::{Synching, User};
 
@@ -158,7 +158,7 @@ impl State {
         }
     }
 
-    async fn act(&mut self) {
+    async fn act(&mut self, tx: Sender<Event>) {
         let start = Instant::now();
         let step_secs = self.config.step_duration_in_secs;
         let step_duration = Duration::from_secs(step_secs as u64);
@@ -196,9 +196,13 @@ impl State {
             one_sec_interval.tick().await;
         }
         progress_bar.finish_and_clear();
+
+        tx.send(Event::AllMessagesSent)
+            .await
+            .expect("AllMessagesSent event");
     }
 
-    async fn waiting_period(&self, metrics: &Metrics) {
+    async fn waiting_period(&self, tx: Sender<Event>, metrics: &Metrics) {
         let spinner = ProgressBar::new_spinner()
             .with_style(
                 ProgressStyle::default_spinner()
@@ -226,6 +230,8 @@ impl State {
 
             spinner.set_message("Checking all messages were received...");
         }
+
+        tx.send(Event::Finish).await.expect("Finish event sent");
     }
 
     pub async fn run(&mut self) {
@@ -233,23 +239,25 @@ impl State {
 
         let execution_id = time_now();
 
-        let (metrics, tx) = Metrics::new();
+        let (tx, rx) = mpsc::channel::<Event>(100);
+        let metrics = Metrics::new(rx);
         for step in 1..=self.config.total_steps {
             println!("Running step {}", step);
+
+            let handle = metrics.run();
 
             // step warm up
             self.init_users(tx.clone()).await;
             self.init_friendships().await;
 
             // step running
-            self.act().await;
-            self.waiting_period(&metrics).await;
+            self.act(tx.clone()).await;
+            self.waiting_period(tx.clone(), &metrics).await;
 
             println!("{}", self);
 
-            metrics
-                .generate_report(execution_id, step, &self.config.output_dir)
-                .await;
+            let report = handle.await.expect("read events loop should end correctly");
+            report.generate_report(execution_id, step, &self.config.output_dir);
 
             // print new line in between steps
             if step < self.config.total_steps {
