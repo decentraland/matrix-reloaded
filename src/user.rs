@@ -305,23 +305,25 @@ impl User<Synching> {
             get_random_string(),
         ));
         let instant = Instant::now();
-        if let Some(room) = client.get_joined_room(room_id) {
-            let response = room.send(content, None).await;
-            match response {
-                Ok(response) => {
-                    self.send(Event::RequestDuration((
-                        UserRequest::SendMessage,
-                        instant.elapsed(),
-                    )))
-                    .await;
 
-                    self.send(Event::MessageSent(response.event_id.to_string()))
-                        .await;
-                }
-                Err(e) => {
-                    if let matrix_sdk::Error::Http(e) = e {
-                        self.send(Event::Error((UserRequest::SendMessage, e))).await;
-                    }
+        let room = client
+            .get_joined_room(room_id)
+            .expect("Room must be Joined at this point");
+        let response = room.send(content, None).await;
+        match response {
+            Ok(response) => {
+                self.send(Event::RequestDuration((
+                    UserRequest::SendMessage,
+                    instant.elapsed(),
+                )))
+                .await;
+
+                self.send(Event::MessageSent(response.event_id.to_string()))
+                    .await;
+            }
+            Err(e) => {
+                if let matrix_sdk::Error::Http(e) = e {
+                    self.send(Event::Error((UserRequest::SendMessage, e))).await;
                 }
             }
         }
@@ -351,8 +353,8 @@ async fn on_room_message(
     }
 }
 
-// /// This function returns homeserver domain and url, ex:
-// ///  - get_homeserver_url("matrix.domain.com") => ("matrix.domain.com", "https://matrix.domain.com")
+/// This function returns homeserver domain and url, ex:
+///  - get_homeserver_url("matrix.domain.com") => ("matrix.domain.com", "https://matrix.domain.com")
 fn get_homeserver_url<'a>(homeserver: &'a str, protocol: Option<&'a str>) -> (&'a str, String) {
     let regex = Regex::new(r"https?://").unwrap();
     if regex.is_match(homeserver) {
