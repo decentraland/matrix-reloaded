@@ -7,7 +7,6 @@ edition = "2021"
 
 [dependencies]
 rand = "0.8.5"
-matrix-sdk = "0.4.1"
 tokio = { version = "1", features = ["full"] }
 lipsum = "0.8.0"
 futures = "0.3.21"
@@ -19,6 +18,11 @@ serde_yaml = "0.8.23"
 serde_with = "1.12.1"
 clap = { version = "3.1.8", features = ["derive"] }
 config = "0.13"
+regex = "1"
+
+[dependencies.matrix-sdk]
+git = "https://github.com/matrix-org/matrix-rust-sdk"
+rev = "35f598a"
 
 [lib]
 name = "matrix_load_testing_tool"
