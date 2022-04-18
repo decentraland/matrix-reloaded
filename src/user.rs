@@ -1,49 +1,53 @@
-use matrix_sdk::instant::Instant;
 use matrix_sdk::room::Room;
+use matrix_sdk::ruma::api::client::error::ErrorKind;
 use matrix_sdk::ruma::api::client::r0::account::register;
 use matrix_sdk::ruma::api::client::r0::room::create_room;
-use matrix_sdk::ruma::api::client::r0::uiaa::{AuthData, Dummy};
+use matrix_sdk::ruma::api::client::r0::uiaa::{AuthData, Dummy, UiaaResponse};
+use matrix_sdk::ruma::api::error::{FromHttpResponseError::*, ServerError::*};
 use matrix_sdk::ruma::events::room::message::MessageEventContent;
 use matrix_sdk::ruma::events::{AnyMessageEventContent, SyncMessageEvent};
+use matrix_sdk::HttpError::UiaaError;
 use matrix_sdk::{Client, ClientConfig, RequestConfig, SyncSettings};
 use rand::Rng;
 use serde::Serialize;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 
 use matrix_sdk::ruma::{assign, RoomId, UserId};
 
-use crate::metrics::Metrics;
+use crate::events::Event;
 use crate::text::get_random_string;
 
 const PASSWORD: &str = "asdfasdf";
 
-pub struct Disconnected {
-    metrics: Metrics,
-}
-pub struct Registered {
-    metrics: Metrics,
-}
-pub struct LoggedIn {
-    metrics: Metrics,
-}
-#[derive(Default, Clone)]
+pub struct Disconnected;
+pub struct Registered;
+pub struct LoggedIn;
+#[derive(Clone)]
 pub struct Synching {
     rooms: Arc<Mutex<Vec<RoomId>>>,
-    metrics: Metrics,
 }
 
 #[derive(Clone)]
 pub struct User<State> {
     id: UserId,
     client: Arc<tokio::sync::Mutex<Client>>,
+    tx: Sender<Event>,
     state: State,
 }
 
 impl<State> User<State> {
     pub fn id(&self) -> UserId {
         self.id.clone()
+    }
+
+    pub async fn send(&self, event: Event) {
+        log::info!("Sending event {:?}", event);
+        if self.tx.send(event).await.is_err() {
+            log::info!("Receiver dropped");
+        }
     }
 }
 
@@ -61,13 +65,14 @@ impl User<Disconnected> {
         id: &str,
         homeserver: &str,
         retry_enabled: bool,
-        metrics: Metrics,
+        tx: Sender<Event>,
     ) -> Option<User<Disconnected>> {
         // init client connection (register + login)
         let user_id = UserId::try_from(format!("@{id}:{homeserver}")).unwrap();
 
         let instant = Instant::now();
 
+        log::info!("Attempt to create a client with id {}", user_id);
         // in case we are testing against localhost or not https server, we need to setup test cfg, see `Client::homeserver_from_user_id`
         let config = if retry_enabled {
             ClientConfig::new()
@@ -81,15 +86,21 @@ impl User<Disconnected> {
         };
         let client = Client::new_from_user_id_with_config(user_id.clone(), config).await;
         if client.is_err() {
+            log::info!("Failed to create client");
             return None;
         }
 
-        log::info!("new client {} {}", user_id, instant.elapsed().as_millis());
+        log::info!(
+            "New client created {} {}",
+            user_id,
+            instant.elapsed().as_millis()
+        );
 
         Some(Self {
             id: user_id,
             client: Arc::new(tokio::sync::Mutex::new(client.unwrap())),
-            state: Disconnected { metrics },
+            tx,
+            state: Disconnected {},
         })
     }
 
@@ -106,19 +117,41 @@ impl User<Disconnected> {
 
         match response {
             Ok(_) => {
-                self.state
-                    .metrics
-                    .report_request_duration((UserRequest::Register, instant.elapsed()));
+                self.send(Event::RequestDuration((
+                    UserRequest::Register,
+                    instant.elapsed(),
+                )))
+                .await;
                 Some(User {
                     id: self.id.clone(),
                     client: self.client.clone(),
-                    state: Registered {
-                        metrics: self.state.metrics.clone(),
-                    },
+                    tx: self.tx.clone(),
+                    state: Registered {},
                 })
             }
             Err(e) => {
-                self.state.metrics.report_error((e, UserRequest::Register));
+                // if ID is already taken, proceed as Registered
+                if let UiaaError(Http(Known(UiaaResponse::MatrixError(e)))) = e {
+                    if e.kind == ErrorKind::UserInUse {
+                        log::info!("Client already registered, proceed to Login {}", self.id());
+                        let user = User::new(
+                            self.id.localpart(),
+                            self.id.server_name().as_str(),
+                            false,
+                            self.tx.clone(),
+                        )
+                        .await
+                        .unwrap();
+                        return Some(User {
+                            id: user.id,
+                            client: user.client,
+                            tx: user.tx,
+                            state: Registered {},
+                        });
+                    }
+                } else {
+                    self.send(Event::Error((UserRequest::Register, e))).await;
+                }
                 None
             }
         }
@@ -130,26 +163,29 @@ impl User<Registered> {
         let instant = Instant::now();
 
         let client = self.client.lock().await;
+        log::info!("Attempt to login client with id {}", self.id());
         let response = client
             .login(self.id.localpart(), PASSWORD, None, None)
             .await;
 
+        log::info!("Login response: {:?}", response);
         match response {
             Ok(_) => {
-                self.state
-                    .metrics
-                    .report_request_duration((UserRequest::Login, instant.elapsed()));
+                self.send(Event::RequestDuration((
+                    UserRequest::Login,
+                    instant.elapsed(),
+                )))
+                .await;
                 Some(User {
                     id: self.id.clone(),
                     client: self.client.clone(),
-                    state: LoggedIn {
-                        metrics: self.state.metrics.clone(),
-                    },
+                    tx: self.tx.clone(),
+                    state: LoggedIn {},
                 })
             }
             Err(e) => {
                 if let matrix_sdk::Error::Http(e) = e {
-                    self.state.metrics.report_error((e, UserRequest::Login));
+                    self.send(Event::Error((UserRequest::Login, e))).await;
                 }
 
                 None
@@ -163,10 +199,10 @@ impl User<LoggedIn> {
         let client = self.client.lock().await;
         client
             .register_event_handler({
-                let metrics = self.state.metrics.clone();
+                let tx = self.tx.clone();
                 let user_id = self.id.clone();
                 move |ev: SyncMessageEvent<MessageEventContent>, room: Room| {
-                    let mut metrics = metrics.clone();
+                    let tx = tx.clone();
                     let user_id = user_id.clone();
                     async move {
                         if ev.sender.localpart() == user_id.localpart() {
@@ -178,7 +214,9 @@ impl User<LoggedIn> {
                             room.room_id(),
                             ev.sender
                         );
-                        metrics.report_message_received(ev.event_id.to_string());
+                        tx.send(Event::MessageReceived(ev.event_id.to_string()))
+                            .await
+                            .expect("Receiver dropped");
                     }
                 }
             })
@@ -195,8 +233,8 @@ impl User<LoggedIn> {
         User {
             id: self.id.clone(),
             client: self.client.clone(),
+            tx: self.tx.clone(),
             state: Synching {
-                metrics: self.state.metrics.clone(),
                 rooms: Arc::new(Mutex::new(vec![])),
             },
         }
@@ -212,15 +250,15 @@ impl User<Synching> {
         let response = client.create_room(request).await;
         match response {
             Ok(ref response) => {
-                self.state
-                    .metrics
-                    .report_request_duration((UserRequest::CreateRoom, instant.elapsed()));
+                self.send(Event::RequestDuration((
+                    UserRequest::CreateRoom,
+                    instant.elapsed(),
+                )))
+                .await;
                 Some(response.room_id.clone())
             }
             Err(e) => {
-                self.state
-                    .metrics
-                    .report_error((e, UserRequest::CreateRoom));
+                self.send(Event::Error((UserRequest::CreateRoom, e))).await;
                 None
             }
         }
@@ -232,13 +270,15 @@ impl User<Synching> {
         let response = client.join_room_by_id(room_id).await;
         match response {
             Ok(ref response) => {
-                self.state
-                    .metrics
-                    .report_request_duration((UserRequest::JoinRoom, instant.elapsed()));
+                self.send(Event::RequestDuration((
+                    UserRequest::JoinRoom,
+                    instant.elapsed(),
+                )))
+                .await;
                 self.state.rooms.lock().await.push(response.room_id.clone());
             }
             Err(e) => {
-                self.state.metrics.report_error((e, UserRequest::JoinRoom));
+                self.send(Event::Error((UserRequest::JoinRoom, e))).await;
             }
         }
     }
@@ -265,19 +305,18 @@ impl User<Synching> {
 
         match response {
             Ok(response) => {
-                self.state
-                    .metrics
-                    .report_request_duration((UserRequest::SendMessage, instant.elapsed()));
+                self.send(Event::RequestDuration((
+                    UserRequest::SendMessage,
+                    instant.elapsed(),
+                )))
+                .await;
 
-                self.state
-                    .metrics
-                    .report_message_sent(response.event_id.to_string());
+                self.send(Event::MessageSent(response.event_id.to_string()))
+                    .await;
             }
             Err(e) => {
                 if let matrix_sdk::Error::Http(e) = e {
-                    self.state
-                        .metrics
-                        .report_error((e, UserRequest::SendMessage));
+                    self.send(Event::Error((UserRequest::SendMessage, e))).await;
                 }
             }
         }

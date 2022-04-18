@@ -2,7 +2,7 @@
 total_steps = 2
 # Users to be created per step
 users_per_step = 100
-# Friendhips (rooms) based on: total possible friendships * friendship ratio
+# Friendships (rooms) based on: total possible friendships * friendship ratio
 friendship_ratio = 0.1
 # Step duration where users interact each other
 step_duration_in_secs = 30

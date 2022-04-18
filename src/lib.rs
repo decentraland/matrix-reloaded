@@ -10,9 +10,13 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 use text::create_progress_bar;
 use time::time_now;
+use tokio::sync::mpsc::{self, Sender};
 use tokio::time::interval;
 use user::{Synching, User};
 
+use crate::events::Event;
+
+mod events;
 mod friendship;
 mod metrics;
 mod text;
@@ -39,7 +43,6 @@ pub struct State {
     config: Configuration,
     friendships: Vec<Friendship>,
     users: Vec<User<Synching>>,
-    metrics: Metrics,
 }
 
 impl Display for State {
@@ -61,11 +64,10 @@ impl State {
             config,
             friendships: vec![],
             users: vec![],
-            metrics: Metrics::default(),
         }
     }
 
-    async fn init_users(&mut self) {
+    async fn init_users(&mut self, tx: Sender<Event>) {
         let timestamp = time_now();
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
@@ -83,7 +85,7 @@ impl State {
             create_user(
                 server.clone(),
                 &progress_bar,
-                self.metrics.clone(),
+                tx.clone(),
                 i,
                 retry_attempts,
                 timestamp,
@@ -156,7 +158,7 @@ impl State {
         }
     }
 
-    async fn act(&mut self) {
+    async fn act(&mut self, tx: Sender<Event>) {
         let start = Instant::now();
         let step_secs = self.config.step_duration_in_secs;
         let step_duration = Duration::from_secs(step_secs as u64);
@@ -194,9 +196,13 @@ impl State {
             one_sec_interval.tick().await;
         }
         progress_bar.finish_and_clear();
+
+        tx.send(Event::AllMessagesSent)
+            .await
+            .expect("AllMessagesSent event");
     }
 
-    async fn waiting_period(&self) {
+    async fn waiting_period(&self, tx: Sender<Event>, metrics: &Metrics) {
         let spinner = ProgressBar::new_spinner()
             .with_style(
                 ProgressStyle::default_spinner()
@@ -208,27 +214,24 @@ impl State {
         let waiting_time = Duration::from_secs(self.config.waiting_period as u64);
         let one_sec = Duration::from_secs(1);
         let start = Instant::now();
-
-        while !self.metrics.all_messages_received() {
+        while !metrics.all_messages_received().await {
             if start.elapsed().ge(&waiting_time) {
-                // waiting time finished, finishing step
                 break;
             }
-
             let wait_one_sec = Instant::now();
             spinner.set_message("Waiting for messages...");
             loop {
                 if wait_one_sec.elapsed().ge(&one_sec) {
-                    // waiting time finished, finishing step
                     break;
                 }
-
                 sleep(Duration::from_millis(100));
                 spinner.inc(1);
             }
 
             spinner.set_message("Checking all messages were received...");
         }
+
+        tx.send(Event::Finish).await.expect("Finish event sent");
     }
 
     pub async fn run(&mut self) {
@@ -236,21 +239,25 @@ impl State {
 
         let execution_id = time_now();
 
+        let (tx, rx) = mpsc::channel::<Event>(100);
+        let metrics = Metrics::new(rx);
         for step in 1..=self.config.total_steps {
             println!("Running step {}", step);
 
+            let handle = metrics.run();
+
             // step warm up
-            self.init_users().await;
+            self.init_users(tx.clone()).await;
             self.init_friendships().await;
 
             // step running
-            self.act().await;
-            self.waiting_period().await;
+            self.act(tx.clone()).await;
+            self.waiting_period(tx.clone(), &metrics).await;
 
             println!("{}", self);
 
-            self.metrics
-                .generate_report(execution_id, step, &self.config.output_dir);
+            let report = handle.await.expect("read events loop should end correctly");
+            report.generate_report(execution_id, step, &self.config.output_dir);
 
             // print new line in between steps
             if step < self.config.total_steps {
@@ -285,7 +292,7 @@ fn join_users_to_room(
 fn create_user(
     server: String,
     progress_bar: &ProgressBar,
-    metrics: Metrics,
+    tx: Sender<Event>,
     i: usize,
     retry_attempts: usize,
     timestamp: u128,
@@ -295,7 +302,7 @@ fn create_user(
     async move {
         let id = format!("user_{i}_{timestamp}");
         for _ in 0..retry_attempts {
-            let user = User::new(&id, &server, retry_enabled, metrics.clone()).await;
+            let user = User::new(&id, &server, retry_enabled, tx.clone()).await;
 
             if let Some(mut user) = user {
                 if let Some(mut user) = user.register().await {
