@@ -12,6 +12,7 @@ use text::create_progress_bar;
 use time::time_now;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::interval;
+use tokio_context::task::TaskController;
 use user::{Synching, User};
 
 use crate::events::Event;
@@ -176,9 +177,12 @@ impl State {
             }
             let loop_start = Instant::now();
 
+            let mut controller = TaskController::with_timeout(tick_duration);
+
             let mut handles = vec![];
             for user in self.users.iter().choose_multiple(&mut rng, users_to_act) {
-                handles.push(tokio::spawn({
+                // Every spawn result in a tokio::select! with the future and the timeout
+                handles.push(controller.spawn({
                     let mut user = user.clone();
                     async move {
                         user.act().await;
@@ -186,25 +190,12 @@ impl State {
                 }));
             }
 
-            tokio::select! {
-                _ = abort_after(tick_duration) => {
-                    log::info!("it took more than 5 seconds to send all messages: {} ms", loop_start.elapsed().as_millis());
-                }
-                _ = join_all(handles) => {
-                    log::info!("time to send {} messages: {} ms", users_to_act, loop_start.elapsed().as_millis());
+            // Timeout is contemplated in this join_all because of the controller spawning tasks.
+            join_all(handles).await;
 
-                    println!("time to send {} messages: {} ms", users_to_act, loop_start.elapsed().as_millis());
-                }
-            }
-
+            // If elapsed time of the current iteration is less than tick duration, we wait until that time.
             let elapsed = loop_start.elapsed();
             if elapsed.le(&tick_duration) {
-                println!(
-                    "tick ended in {} ms, waiting {} ms to complete tick duration",
-                    elapsed.as_millis(),
-                    (tick_duration - elapsed).as_millis()
-                );
-                println!();
                 sleep(tick_duration - elapsed);
             }
             progress_bar.inc(1);
@@ -334,10 +325,4 @@ fn create_user(
         progress_bar.inc(1);
         None
     }
-}
-
-async fn abort_after(duration: Duration) {
-    let mut interval = interval(duration);
-    interval.tick().await; // the first tick completes immediately.
-    interval.tick().await;
 }

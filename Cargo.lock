@@ -1271,6 +1271,7 @@ dependencies = [
  "serde_with",
  "serde_yaml",
  "tokio",
+ "tokio-context",
 ]
 
 [[package]]
@@ -2505,6 +2506,15 @@ dependencies = [
  "socket2",
  "tokio-macros",
  "winapi",
+]
+
+[[package]]
+name = "tokio-context"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaf0b8394dd5ca9a1b726c629390154c19222dfd7467a4b56f1ced90adee3958"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]
