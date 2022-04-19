@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use indicatif::{ProgressBar, ProgressStyle};
 use lipsum::lipsum;
 use rand::Rng;
@@ -7,7 +9,7 @@ pub fn get_random_string() -> String {
     lipsum(random_number)
 }
 
-pub fn create_progress_bar(text: String, size: u64) -> ProgressBar {
+pub fn create_progress_bar(text: impl Into<Cow<'static, str>>, size: u64) -> ProgressBar {
     let progress_style = ProgressStyle::default_bar()
         .template("{prefix:>12.cyan.bold}: [{bar:57}] {pos}/{len}")
         .progress_chars("=> ");

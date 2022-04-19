@@ -306,24 +306,23 @@ impl User<Synching> {
         ));
         let instant = Instant::now();
 
-        let room = client
-            .get_joined_room(room_id)
-            .expect("Room must be Joined at this point");
-        let response = room.send(content, None).await;
-        match response {
-            Ok(response) => {
-                self.send(Event::RequestDuration((
-                    UserRequest::SendMessage,
-                    instant.elapsed(),
-                )))
-                .await;
-
-                self.send(Event::MessageSent(response.event_id.to_string()))
+        if let Some(room) = client.get_joined_room(room_id) {
+            let response = room.send(content, None).await;
+            match response {
+                Ok(response) => {
+                    self.send(Event::RequestDuration((
+                        UserRequest::SendMessage,
+                        instant.elapsed(),
+                    )))
                     .await;
-            }
-            Err(e) => {
-                if let matrix_sdk::Error::Http(e) = e {
-                    self.send(Event::Error((UserRequest::SendMessage, e))).await;
+
+                    self.send(Event::MessageSent(response.event_id.to_string()))
+                        .await;
+                }
+                Err(e) => {
+                    if let matrix_sdk::Error::Http(e) = e {
+                        self.send(Event::Error((UserRequest::SendMessage, e))).await;
+                    }
                 }
             }
         }
