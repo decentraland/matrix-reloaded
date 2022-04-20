@@ -29,6 +29,12 @@ mod user;
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Configuration {
+    pub user_count: i64,
+    pub users_filename: String,
+    pub create: bool,
+    pub delete: bool,
+    pub run: bool,
+    pub timestamp: Option<u128>,
     homeserver_url: String,
     output_dir: String,
     total_steps: usize,

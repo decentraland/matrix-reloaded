@@ -6,6 +6,7 @@ use crate::time::time_now;
 use crate::users_state::{load_users, save_users, SavedUserState};
 use crate::Configuration;
 use futures::StreamExt;
+use indicatif::ProgressBar;
 use matrix_sdk::config::RequestConfig;
 use matrix_sdk::room::Room;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy, UiaaResponse};
@@ -478,7 +479,7 @@ pub async fn create_desired_users(config: &Configuration) {
 
     let homeserver_url = config.homeserver_url.clone();
 
-    let mut client = get_client(homeserver_url.clone(), config.retry_request_config).await;
+    let mut client = get_client(homeserver_url.clone(), config.retry_request_config).await.unwrap();
 
     let futures = (0..users_to_create).map(|i| {
         create_user(
