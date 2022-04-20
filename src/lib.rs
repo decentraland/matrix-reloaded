@@ -25,6 +25,7 @@ mod metrics;
 mod text;
 mod time;
 mod user;
+mod users_state;
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug)]

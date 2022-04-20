@@ -442,7 +442,7 @@ fn get_homeserver_url<'a>(homeserver: &'a str, protocol: Option<&'a str>) -> (&'
 }
 
 async fn get_client(homeserver_url: String, retry_enabled: bool) -> Option<Client> {
-    log::info!("Attempt to create a client with id {}", user_id);
+    log::info!("Attempt to create a client with id ");
 
     let request_config = if retry_enabled {
         RequestConfig::new().retry_timeout(Duration::from_secs(30))
@@ -479,7 +479,9 @@ pub async fn create_desired_users(config: &Configuration) {
 
     let homeserver_url = config.homeserver_url.clone();
 
-    let mut client = get_client(homeserver_url.clone(), config.retry_request_config).await.unwrap();
+    let mut client = get_client(homeserver_url.clone(), config.retry_request_config)
+        .await
+        .unwrap();
 
     let futures = (0..users_to_create).map(|i| {
         create_user(

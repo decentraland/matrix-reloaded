@@ -1,20 +1,21 @@
-use std::{collections::HashMap, fmt, fs::File, io::Write, marker::PhantomData};
+use std::{collections::HashMap, fs::File, io::Write};
 
-use matrix_sdk::ruma::api::exports::serde_json;
-use serde::{
-    de::{MapAccess, Visitor},
-    ser::SerializeMap,
-    Deserialize, Deserializer, Serialize, Serializer,
-};
+use matrix_sdk::ruma::exports::serde_json;
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+use serde_with::DisplayFromStr;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct SavedUserState {
     pub homeserver_url: String,
     pub amount: i64,
     pub friendships: Vec<(usize, usize)>,
 }
 
+#[serde_as]
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct SavedUsers {
+    #[serde_as(as = "HashMap<DisplayFromStr, _>")]
     pub users: HashMap<u128, SavedUserState>,
 }
 
@@ -31,78 +32,6 @@ impl SavedUsers {
 
     pub fn add_user(&mut self, key: u128, value: SavedUserState) {
         self.users.insert(key, value);
-    }
-}
-
-impl Serialize for SavedUsers {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut map = serializer.serialize_map(Some(self.users.len()))?;
-        for (k, v) in &self.users {
-            map.serialize_entry(&k.to_string(), &v)?;
-        }
-        map.end()
-    }
-}
-
-struct SavedUsersVisitor {
-    marker: PhantomData<fn() -> SavedUsers>,
-}
-
-impl SavedUsersVisitor {
-    fn new() -> Self {
-        SavedUsersVisitor {
-            marker: PhantomData,
-        }
-    }
-}
-
-impl<'de> Visitor<'de> for SavedUsersVisitor {
-    // The type that our Visitor is going to produce.
-    type Value = SavedUsers;
-
-    // Format a message stating what data this Visitor expects to receive.
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a very special map")
-    }
-
-    // Deserialize MyMap from an abstract "map" provided by the
-    // Deserializer. The MapAccess input is a callback provided by
-    // the Deserializer to let us see each entry in the map.
-    fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
-    where
-        M: MapAccess<'de>,
-    {
-        let mut map = HashMap::new();
-
-        // While there are entries remaining in the input, add them
-        // into our map.
-        while let Some((key, value)) = access.next_entry()? {
-            map.insert(key, value);
-        }
-
-        Ok(SavedUsers { users: map })
-    }
-}
-
-impl<'de> Deserialize<'de> for SavedUsers {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        // Instantiate our Visitor and ask the Deserializer to drive
-        // it over the input data, resulting in an instance of MyMap.
-        let res = deserializer.deserialize_map(SavedUsersVisitor::new());
-
-        match res {
-            Ok(val) => Ok(val),
-            Err(err) => {
-                println!("Failed while deserializing saved state {}", err);
-                Err(err)
-            }
-        }
     }
 }
 
@@ -124,4 +53,51 @@ pub fn load_users(file: String) -> SavedUsers {
     let res: SavedUsers = serde_json::from_str(&file_content).unwrap();
 
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{load_users, save_users, SavedUserState, SavedUsers};
+
+    #[test]
+    fn identity_creation() {
+        let mut saved_state = SavedUsers {
+            users: HashMap::new(),
+        };
+
+        saved_state.users.insert(
+            123,
+            SavedUserState {
+                homeserver_url: "Asd".to_string(),
+                amount: 10,
+                friendships: vec![],
+            },
+        );
+        saved_state.users.insert(
+            124,
+            SavedUserState {
+                homeserver_url: "Asd".to_string(),
+                amount: 10,
+                friendships: vec![],
+            },
+        );
+        saved_state.users.insert(
+            125,
+            SavedUserState {
+                homeserver_url: "Asd".to_string(),
+                amount: 10,
+                friendships: vec![],
+            },
+        );
+
+        let result = save_users(&saved_state, "users_test.json".to_string());
+        let res1 = load_users("users_test.json".to_string());
+
+        assert_eq!(
+            res1, saved_state,
+            "The read of the file should be equal to the structure generated in code"
+        );
+    }
 }
