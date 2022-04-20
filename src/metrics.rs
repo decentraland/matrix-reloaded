@@ -1,18 +1,20 @@
 use crate::events::Event;
-use crate::{time::time_now, user::UserRequest};
+use crate::user::UserRequest;
 use futures::lock::Mutex;
 use matrix_sdk::ruma::api::client::uiaa::UiaaResponse;
 use matrix_sdk::HttpError;
+use serde::Serialize;
 use serde_with::serde_as;
-use std::sync::atomic::AtomicBool;
+use serde_with::DisplayFromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::{
     cmp::Reverse,
     collections::HashMap,
-    fs::{create_dir_all, File},
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc::Receiver;
+use tokio::task::JoinHandle;
 
 #[derive(Default)]
 struct MessageTimes {
@@ -26,16 +28,18 @@ pub struct Metrics {
 }
 
 #[serde_as]
-#[derive(serde::Serialize, Default)]
-pub struct Report {
+#[derive(Serialize, Default, Debug)]
+pub struct MetricsReport {
+    #[serde_as(as = "HashMap<_, _>")]
     requests_average_time: Vec<(UserRequest, u128)>,
+    #[serde_as(as = "HashMap<DisplayFromStr, _>")]
     http_errors_per_request: Vec<(String, usize)>,
     message_delivery_average_time: u128,
     messages_sent: usize,
     lost_messages: usize,
 }
 
-impl Report {
+impl MetricsReport {
     fn from(
         http_errors: &[(UserRequest, HttpError)],
         request_times: &[(UserRequest, Duration)],
@@ -62,32 +66,6 @@ impl Report {
             lost_messages,
         }
     }
-
-    pub fn generate_report(&self, execution_id: u128, step: usize, output_dir: &str) {
-        let result = create_dir_all(format!("{}/{}", output_dir, execution_id));
-        let output_dir = if result.is_err() {
-            println!(
-                "Couldn't ensure output folder, defaulting to 'output/{}'",
-                execution_id
-            );
-            create_dir_all(format!("output/{}", execution_id)).unwrap();
-            "output"
-        } else {
-            output_dir
-        };
-
-        let path = format!(
-            "{}/{}/report_{}_{}.yaml",
-            output_dir,
-            execution_id,
-            step,
-            time_now()
-        );
-        let buffer = File::create(&path).unwrap();
-
-        serde_yaml::to_writer(buffer, &self).expect("Couldn't write report to file");
-        println!("Report generated: {}", path);
-    }
 }
 
 impl Metrics {
@@ -99,14 +77,94 @@ impl Metrics {
     }
 
     pub async fn all_messages_received(&self) -> bool {
-        self.all_messages_received
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.all_messages_received.load(Ordering::SeqCst)
     }
-    pub fn run(&self) -> tokio::task::JoinHandle<Report> {
+
+    pub fn run(&self) -> JoinHandle<MetricsReport> {
         tokio::spawn(read_events(
             self.receiver.clone(),
             self.all_messages_received.clone(),
         ))
+    }
+}
+
+async fn read_events(
+    receiver: Arc<Mutex<Receiver<Event>>>,
+    all_messages_received: Arc<AtomicBool>,
+) -> MetricsReport {
+    let mut http_errors: Vec<(UserRequest, HttpError)> = vec![];
+    let mut request_times: Vec<(UserRequest, Duration)> = vec![];
+    let mut messages: HashMap<String, MessageTimes> = HashMap::new();
+
+    let mut finishing_phase = false;
+
+    let mut rec = receiver.lock().await;
+
+    loop {
+        match rec.recv().await {
+            Some(e) => {
+                log::info!("Event received {:?}", e);
+                match e {
+                    Event::Error(e) => {
+                        http_errors.push(e);
+                    }
+                    Event::MessageSent(message_id) => {
+                        messages.entry(message_id).or_default().sent = Some(Instant::now());
+                    }
+                    Event::MessageReceived(message_id) => {
+                        messages.entry(message_id).or_default().received = Some(Instant::now());
+                        if finishing_phase {
+                            check_and_swap_all_messages_received(&messages, &all_messages_received);
+                        }
+                    }
+                    Event::RequestDuration(request) => {
+                        request_times.push(request);
+                    }
+                    Event::AllMessagesSent => {
+                        finishing_phase = true;
+                    }
+                    Event::Finish => {
+                        break MetricsReport::from(&http_errors, &request_times, &messages)
+                    }
+                }
+            }
+            None => {
+                log::info!("Failed to receive an event through the mpsc chanel.");
+            }
+        }
+    }
+}
+
+fn check_and_swap_all_messages_received(
+    messages: &HashMap<String, MessageTimes>,
+    all_messages_received: &AtomicBool,
+) {
+    if calculate_lost_messages(messages) == 0 {
+        all_messages_received.swap(true, Ordering::SeqCst);
+    }
+}
+
+fn get_error_code(e: &HttpError) -> String {
+    use matrix_sdk::ruma::api::error::*;
+    match e {
+        HttpError::ClientApi(FromHttpResponseError::Server(ServerError::Known(e))) => {
+            e.status_code.as_u16().to_string()
+        }
+        HttpError::Server(status_code) => status_code.as_u16().to_string(),
+        HttpError::UiaaError(FromHttpResponseError::Server(ServerError::Known(e))) => match e {
+            UiaaResponse::AuthResponse(e) => e.auth_error.as_ref().unwrap().message.clone(),
+            UiaaResponse::MatrixError(e) => e.kind.to_string(),
+            _ => e.to_string(),
+        },
+        HttpError::Reqwest(e) => {
+            if e.is_request() {
+                log::error!("{}", e);
+                "failed_to_send_request".to_string()
+            } else {
+                e.to_string()
+            }
+        }
+        _ => e.to_string(),
     }
 }
 
@@ -154,76 +212,6 @@ fn calculate_lost_messages(messages: &HashMap<String, MessageTimes>) -> usize {
         .count()
 }
 
-async fn read_events(
-    receiver: Arc<Mutex<Receiver<Event>>>,
-    all_messages_received: Arc<AtomicBool>,
-) -> Report {
-    let mut http_errors: Vec<(UserRequest, HttpError)> = vec![];
-    let mut request_times: Vec<(UserRequest, Duration)> = vec![];
-    let mut messages: HashMap<String, MessageTimes> = HashMap::new();
-
-    let mut finishing_phase = false;
-
-    let mut rec = receiver.lock().await;
-
-    loop {
-        match rec.recv().await {
-            Some(e) => {
-                log::info!("Event received {:?}", e);
-                match e {
-                    Event::Error(e) => {
-                        http_errors.push(e);
-                    }
-                    Event::MessageSent(message_id) => {
-                        messages.entry(message_id).or_default().sent = Some(Instant::now());
-                    }
-                    Event::MessageReceived(message_id) => {
-                        messages.entry(message_id).or_default().received = Some(Instant::now());
-                        if finishing_phase {
-                            check_and_swap_all_messages_received(&messages, &all_messages_received);
-                        }
-                    }
-                    Event::RequestDuration(request) => {
-                        request_times.push(request);
-                    }
-                    Event::AllMessagesSent => {
-                        finishing_phase = true;
-                    }
-                    Event::Finish => break Report::from(&http_errors, &request_times, &messages),
-                }
-            }
-            None => {
-                log::info!("Failed to receive an event through the mpsc chanel.");
-            }
-        }
-    }
-}
-
-fn check_and_swap_all_messages_received(
-    messages: &HashMap<String, MessageTimes>,
-    all_messages_received: &AtomicBool,
-) {
-    if calculate_lost_messages(messages) == 0 {
-        all_messages_received.swap(true, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-fn get_error_code(e: &HttpError) -> String {
-    use matrix_sdk::ruma::api::error::*;
-    match e {
-        HttpError::ClientApi(FromHttpResponseError::Server(ServerError::Known(e))) => {
-            e.status_code.to_string()
-        }
-        HttpError::Server(status_code) => status_code.to_string(),
-        HttpError::UiaaError(FromHttpResponseError::Server(ServerError::Known(e))) => match e {
-            UiaaResponse::AuthResponse(e) => e.auth_error.as_ref().unwrap().message.clone(),
-            UiaaResponse::MatrixError(e) => e.kind.to_string(),
-            _ => e.to_string(),
-        },
-        _ => e.to_string(),
-    }
-}
-
 fn calculate_http_errors_per_request(
     http_errors: &[(UserRequest, HttpError)],
 ) -> Vec<(String, usize)> {
@@ -231,7 +219,7 @@ fn calculate_http_errors_per_request(
         HashMap::<String, usize>::new(),
         |mut map, (request_type, e)| {
             let error_code = get_error_code(e);
-            *map.entry(format!("{:?}:{:?}", request_type.clone(), error_code))
+            *map.entry(format!("{}_{}", request_type.clone(), error_code))
                 .or_default() += 1;
             map
         },
