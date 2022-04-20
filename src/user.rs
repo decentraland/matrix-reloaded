@@ -28,6 +28,7 @@ use regex::Regex;
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use strum::Display;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 
@@ -62,7 +63,9 @@ impl<State> User<State> {
     }
 }
 
-#[derive(Serialize, Debug, Eq, Hash, PartialEq, Clone)]
+#[derive(Serialize, Debug, Eq, Hash, PartialEq, Clone, Display)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum UserRequest {
     Register,
     Login,

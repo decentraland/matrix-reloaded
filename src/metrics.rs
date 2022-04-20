@@ -3,6 +3,7 @@ use crate::user::UserRequest;
 use futures::lock::Mutex;
 use matrix_sdk::ruma::api::client::uiaa::UiaaResponse;
 use matrix_sdk::HttpError;
+use serde::Serialize;
 use serde_with::serde_as;
 use serde_with::DisplayFromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +28,7 @@ pub struct Metrics {
 }
 
 #[serde_as]
-#[derive(serde::Serialize, Default, Debug)]
+#[derive(Serialize, Default, Debug)]
 pub struct MetricsReport {
     #[serde_as(as = "HashMap<_, _>")]
     requests_average_time: Vec<(UserRequest, u128)>,
@@ -147,14 +148,22 @@ fn get_error_code(e: &HttpError) -> String {
     use matrix_sdk::ruma::api::error::*;
     match e {
         HttpError::ClientApi(FromHttpResponseError::Server(ServerError::Known(e))) => {
-            e.status_code.to_string()
+            e.status_code.as_u16().to_string()
         }
-        HttpError::Server(status_code) => status_code.to_string(),
+        HttpError::Server(status_code) => status_code.as_u16().to_string(),
         HttpError::UiaaError(FromHttpResponseError::Server(ServerError::Known(e))) => match e {
             UiaaResponse::AuthResponse(e) => e.auth_error.as_ref().unwrap().message.clone(),
             UiaaResponse::MatrixError(e) => e.kind.to_string(),
             _ => e.to_string(),
         },
+        HttpError::Reqwest(e) => {
+            if e.is_request() {
+                log::error!("{}", e);
+                "failed_to_send_request".to_string()
+            } else {
+                e.to_string()
+            }
+        }
         _ => e.to_string(),
     }
 }
@@ -210,7 +219,7 @@ fn calculate_http_errors_per_request(
         HashMap::<String, usize>::new(),
         |mut map, (request_type, e)| {
             let error_code = get_error_code(e);
-            *map.entry(format!("{:?}:{:?}", request_type.clone(), error_code))
+            *map.entry(format!("{}_{}", request_type.clone(), error_code))
                 .or_default() += 1;
             map
         },

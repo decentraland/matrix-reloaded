@@ -57,6 +57,7 @@ pub struct State {
 #[derive(serde::Serialize, Default, Debug)]
 struct Report {
     homeserver: String,
+    step: usize,
     step_users: usize,
     step_friendships: usize,
     report: MetricsReport,
@@ -296,6 +297,7 @@ impl State {
 
         let report = Report {
             homeserver: self.config.homeserver_url.to_string(),
+            step,
             step_users: self.users.len(),
             step_friendships: self.friendships.len(),
             report,
