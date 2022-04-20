@@ -31,6 +31,7 @@ pub struct Report {
     requests_average_time: Vec<(UserRequest, u128)>,
     http_errors_per_request: Vec<(String, usize)>,
     message_delivery_average_time: u128,
+    messages_sent: usize,
     lost_messages: usize,
 }
 
@@ -48,11 +49,16 @@ impl Report {
         http_errors_per_request.sort_unstable_by_key(|(_, count)| Reverse(*count));
 
         let lost_messages = calculate_lost_messages(messages);
+        let messages_sent = messages
+            .iter()
+            .filter(|(_, times)| times.sent.is_some())
+            .count();
 
         Self {
             requests_average_time,
             http_errors_per_request,
             message_delivery_average_time,
+            messages_sent,
             lost_messages,
         }
     }

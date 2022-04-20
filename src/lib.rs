@@ -12,6 +12,7 @@ use text::create_progress_bar;
 use time::time_now;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::interval;
+use tokio_context::task::TaskController;
 use user::{Synching, User};
 
 use crate::events::Event;
@@ -30,7 +31,8 @@ pub struct Configuration {
     total_steps: usize,
     users_per_step: usize,
     friendship_ratio: f32,
-    step_duration_in_secs: usize,
+    step_duration_in_secs: u64,
+    tick_duration_in_secs: u64,
     max_users_to_act_per_tick: usize,
     waiting_period: usize,
     retry_request_config: bool,
@@ -49,10 +51,6 @@ impl Display for State {
     fn fmt(&self, w: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(w, "Amount of users: {}", self.users.len()).unwrap();
         writeln!(w, "Amount of friendships: {}", self.friendships.len()).unwrap();
-        writeln!(w, "Listing friendships: ").unwrap();
-        for friendship in &self.friendships {
-            writeln!(w, "- {}", friendship).unwrap();
-        }
 
         Ok(())
     }
@@ -160,40 +158,47 @@ impl State {
 
     async fn act(&mut self, tx: Sender<Event>) {
         let start = Instant::now();
-        let step_secs = self.config.step_duration_in_secs;
-        let step_duration = Duration::from_secs(step_secs as u64);
+
+        let step_duration = Duration::from_secs(self.config.step_duration_in_secs);
+        let tick_duration = Duration::from_secs(self.config.tick_duration_in_secs);
 
         let users_to_act = std::cmp::min(self.users.len(), self.config.max_users_to_act_per_tick);
         let progress_bar = create_progress_bar(
-            "Running".to_string(),
-            (step_secs * users_to_act).try_into().unwrap(),
+            "Running",
+            (step_duration.as_secs_f64() / tick_duration.as_secs_f64()).ceil() as u64,
         );
-        progress_bar.tick();
 
-        let mut one_sec_interval = interval(Duration::from_secs(1));
+        progress_bar.tick();
         let mut rng = rand::thread_rng();
         loop {
             if start.elapsed().ge(&step_duration) {
                 // elapsed time for current step reached, breaking the loop and proceed to next step
                 break;
             }
-            let mut handles = vec![];
+            let loop_start = Instant::now();
 
+            let mut controller = TaskController::with_timeout(tick_duration);
+
+            let mut handles = vec![];
             for user in self.users.iter().choose_multiple(&mut rng, users_to_act) {
-                let user = user;
-                handles.push(tokio::spawn({
+                // Every spawn result in a tokio::select! with the future and the timeout
+                handles.push(controller.spawn({
                     let mut user = user.clone();
-                    let progress_bar = progress_bar.clone();
                     async move {
                         user.act().await;
-                        progress_bar.inc(1);
                     }
                 }));
             }
+
+            // Timeout is contemplated in this join_all because of the controller spawning tasks.
             join_all(handles).await;
 
-            // waits for a second before the next iteration
-            one_sec_interval.tick().await;
+            // If elapsed time of the current iteration is less than tick duration, we wait until that time.
+            let elapsed = loop_start.elapsed();
+            if elapsed.le(&tick_duration) {
+                sleep(tick_duration - elapsed);
+            }
+            progress_bar.inc(1);
         }
         progress_bar.finish_and_clear();
 

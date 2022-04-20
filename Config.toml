@@ -4,9 +4,11 @@ total_steps = 2
 users_per_step = 100
 # Friendships (rooms) based on: total possible friendships * friendship ratio
 friendship_ratio = 0.1
-# Step duration where users interact each other
+# Step total duration
 step_duration_in_secs = 30
-# Max users to act per second during a step
+# Tick duration where users interact each other
+tick_duration_in_secs = 5
+# Max users to act per tick during a step
 max_users_to_act_per_tick = 100
 # Time to wait for all messages to be delivered, after that time they are considered as lost
 waiting_period = 30
