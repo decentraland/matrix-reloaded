@@ -1,19 +1,21 @@
 use friendship::{Friendship, FriendshipID};
 use futures::future::join_all;
+use futures::stream::iter;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use metrics::Metrics;
+use metrics::{Metrics, MetricsReport};
 use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
+use serde_with::serde_as;
+use serde_with::DurationSeconds;
+use std::fs::{create_dir_all, File};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use text::create_progress_bar;
 use time::time_now;
 use tokio::sync::mpsc::{self, Sender};
-use tokio::time::interval;
 use tokio_context::task::TaskController;
-use user::{Synching, User};
+use user::{create_user, join_users_to_room, Synching, User};
 
 use crate::events::Event;
 
@@ -24,6 +26,7 @@ mod text;
 mod time;
 mod user;
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Configuration {
     homeserver_url: String,
@@ -31,8 +34,12 @@ pub struct Configuration {
     total_steps: usize,
     users_per_step: usize,
     friendship_ratio: f32,
-    step_duration_in_secs: u64,
-    tick_duration_in_secs: u64,
+    #[serde_as(as = "DurationSeconds<u64>")]
+    #[serde(rename = "step_duration_in_secs")]
+    step_duration: Duration,
+    #[serde_as(as = "DurationSeconds<u64>")]
+    #[serde(rename = "tick_duration_in_secs")]
+    tick_duration: Duration,
     max_users_to_act_per_tick: usize,
     waiting_period: usize,
     retry_request_config: bool,
@@ -47,13 +54,12 @@ pub struct State {
     users: Vec<User<Synching>>,
 }
 
-impl Display for State {
-    fn fmt(&self, w: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(w, "Amount of users: {}", self.users.len()).unwrap();
-        writeln!(w, "Amount of friendships: {}", self.friendships.len()).unwrap();
-
-        Ok(())
-    }
+#[derive(serde::Serialize, Default, Debug)]
+struct Report {
+    homeserver: String,
+    step_users: usize,
+    step_friendships: usize,
+    report: MetricsReport,
 }
 
 impl State {
@@ -79,7 +85,7 @@ impl State {
         );
         progress_bar.tick();
 
-        let futures = (actual_users..desired_users).map(|i| {
+        let mut user_creations_buffer = iter((actual_users..desired_users).map(|i| {
             create_user(
                 server.clone(),
                 &progress_bar,
@@ -89,12 +95,10 @@ impl State {
                 timestamp,
                 retry_enabled,
             )
-        });
+        }))
+        .buffer_unordered(self.config.user_creation_throughput);
 
-        let stream_iter = futures::stream::iter(futures);
-        let mut buffered_iter = stream_iter.buffer_unordered(self.config.user_creation_throughput);
-
-        while let Some(user) = buffered_iter.next().await {
+        while let Some(user) = user_creations_buffer.next().await {
             if let Some(user) = user {
                 self.users.push(user);
             }
@@ -128,7 +132,7 @@ impl State {
             futures.push(join_users_to_room(first_user, second_user, &progress_bar));
         }
 
-        let stream_iter = futures::stream::iter(futures);
+        let stream_iter = iter(futures);
         let mut buffered_iter = stream_iter.buffer_unordered(self.config.room_creation_throughput);
 
         while (buffered_iter.next().await).is_some() {}
@@ -159,25 +163,23 @@ impl State {
     async fn act(&mut self, tx: Sender<Event>) {
         let start = Instant::now();
 
-        let step_duration = Duration::from_secs(self.config.step_duration_in_secs);
-        let tick_duration = Duration::from_secs(self.config.tick_duration_in_secs);
-
         let users_to_act = std::cmp::min(self.users.len(), self.config.max_users_to_act_per_tick);
         let progress_bar = create_progress_bar(
             "Running",
-            (step_duration.as_secs_f64() / tick_duration.as_secs_f64()).ceil() as u64,
+            (self.config.step_duration.as_secs_f64() / self.config.tick_duration.as_secs_f64())
+                .ceil() as u64,
         );
 
         progress_bar.tick();
         let mut rng = rand::thread_rng();
         loop {
-            if start.elapsed().ge(&step_duration) {
+            if start.elapsed().ge(&self.config.step_duration) {
                 // elapsed time for current step reached, breaking the loop and proceed to next step
                 break;
             }
             let loop_start = Instant::now();
 
-            let mut controller = TaskController::with_timeout(tick_duration);
+            let mut controller = TaskController::with_timeout(self.config.tick_duration);
 
             let mut handles = vec![];
             for user in self.users.iter().choose_multiple(&mut rng, users_to_act) {
@@ -195,8 +197,8 @@ impl State {
 
             // If elapsed time of the current iteration is less than tick duration, we wait until that time.
             let elapsed = loop_start.elapsed();
-            if elapsed.le(&tick_duration) {
-                sleep(tick_duration - elapsed);
+            if elapsed.le(&self.config.tick_duration) {
+                sleep(self.config.tick_duration - elapsed);
             }
             progress_bar.inc(1);
         }
@@ -259,10 +261,9 @@ impl State {
             self.act(tx.clone()).await;
             self.waiting_period(tx.clone(), &metrics).await;
 
-            println!("{}", self);
-
+            // generate report
             let report = handle.await.expect("read events loop should end correctly");
-            report.generate_report(execution_id, step, &self.config.output_dir);
+            self.generate_report(execution_id, step, report);
 
             // print new line in between steps
             if step < self.config.total_steps {
@@ -270,59 +271,38 @@ impl State {
             }
         }
     }
-}
 
-fn join_users_to_room(
-    first_user: &User<Synching>,
-    second_user: &User<Synching>,
-    progress_bar: &ProgressBar,
-) -> impl futures::Future<Output = ()> {
-    let mut first_user = first_user.clone();
-    let mut second_user = second_user.clone();
-    let progress_bar = progress_bar.clone();
-
-    async move {
-        let room_created = first_user.create_room().await;
-        if let Some(room_id) = room_created {
-            first_user.join_room(&room_id).await;
-            second_user.join_room(&room_id).await;
+    pub fn generate_report(&self, execution_id: u128, step: usize, report: MetricsReport) {
+        let result = create_dir_all(format!("{}/{}", self.config.output_dir, execution_id));
+        let output_dir = if result.is_err() {
+            println!(
+                "Couldn't ensure output folder, defaulting to 'output/{}'",
+                execution_id
+            );
+            create_dir_all(format!("output/{}", execution_id)).unwrap();
+            "output"
         } else {
-            //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
-            log::info!("User {} couldn't create a room", first_user.id());
-        }
-        progress_bar.inc(1);
-    }
-}
+            self.config.output_dir.as_ref()
+        };
 
-fn create_user(
-    server: String,
-    progress_bar: &ProgressBar,
-    tx: Sender<Event>,
-    i: usize,
-    retry_attempts: usize,
-    timestamp: u128,
-    retry_enabled: bool,
-) -> impl futures::Future<Output = Option<User<Synching>>> {
-    let progress_bar = progress_bar.clone();
-    async move {
-        let id = format!("user_{i}_{timestamp}");
-        for _ in 0..retry_attempts {
-            let user = User::new(&id, &server, retry_enabled, tx.clone()).await;
+        let path = format!(
+            "{}/{}/report_{}_{}.yaml",
+            output_dir,
+            execution_id,
+            step,
+            time_now()
+        );
+        let buffer = File::create(&path).unwrap();
 
-            if let Some(mut user) = user {
-                if let Some(mut user) = user.register().await {
-                    if let Some(user) = user.login().await {
-                        log::info!("User is now synching: {}", user.id());
-                        progress_bar.inc(1);
-                        return Some(user.sync().await);
-                    }
-                }
-            }
-        }
+        let report = Report {
+            homeserver: self.config.homeserver_url.to_string(),
+            step_users: self.users.len(),
+            step_friendships: self.friendships.len(),
+            report,
+        };
 
-        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
-        log::info!("Couldn't init a user");
-        progress_bar.inc(1);
-        None
+        serde_yaml::to_writer(buffer, &report).expect("Couldn't write report to file");
+        println!("Step report generated: {}\n", path);
+        println!("{:#?}\n", report);
     }
 }

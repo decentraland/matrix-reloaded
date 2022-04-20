@@ -1,14 +1,14 @@
 use crate::events::Event;
 use crate::text::get_random_string;
+use indicatif::ProgressBar;
 use matrix_sdk::config::RequestConfig;
 use matrix_sdk::room::Room;
-use matrix_sdk::ruma::api::client::error::ErrorKind;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy, UiaaResponse};
 use matrix_sdk::ruma::api::error::FromHttpResponseError::Server;
 use matrix_sdk::ruma::api::error::ServerError::Known;
 use matrix_sdk::ruma::{
     api::client::{
-        account::register::v3::Request as RegistrationRequest,
+        account::register::v3::Request as RegistrationRequest, error::ErrorKind,
         room::create_room::v3::Request as CreateRoomRequest,
     },
     assign,
@@ -44,7 +44,7 @@ pub struct Synching {
 #[derive(Clone)]
 pub struct User<State> {
     id: Box<UserId>,
-    client: Arc<tokio::sync::Mutex<Client>>,
+    client: Arc<Mutex<Client>>,
     tx: Sender<Event>,
     state: State,
 }
@@ -87,12 +87,11 @@ impl User<Disconnected> {
 
         log::info!("Attempt to create a client with id {}", user_id);
 
+        let timeout = Duration::from_secs(30);
         let request_config = if retry_enabled {
-            RequestConfig::new().retry_timeout(Duration::from_secs(30))
+            RequestConfig::new().retry_timeout(timeout)
         } else {
-            RequestConfig::new()
-                .disable_retry()
-                .timeout(Duration::from_secs(30))
+            RequestConfig::new().disable_retry().timeout(timeout)
         };
 
         let client = Client::builder()
@@ -113,7 +112,7 @@ impl User<Disconnected> {
 
         Some(Self {
             id: user_id,
-            client: Arc::new(tokio::sync::Mutex::new(client.unwrap())),
+            client: Arc::new(Mutex::new(client.unwrap())),
             tx,
             state: Disconnected {},
         })
@@ -291,16 +290,11 @@ impl User<Synching> {
         let client = self.client.lock().await;
         let rooms = self.state.rooms.lock().await;
 
-        let room = match rooms.len() {
-            0 => {
-                // if user is not present in any room, return
-                return;
-            }
-            1 => 0,
-            rooms_len => rand::thread_rng().gen_range(0..rooms_len),
-        };
+        if rooms.len() == 0 {
+            return;
+        }
 
-        let room_id = &rooms[room];
+        let room_id = &rooms[rand::thread_rng().gen_range(0..rooms.len())];
         let content = AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(
             get_random_string(),
         ));
@@ -325,7 +319,64 @@ impl User<Synching> {
                     }
                 }
             }
+        } else {
+            // TODO! check why this can be possible
         }
+    }
+}
+
+pub fn join_users_to_room(
+    first_user: &User<Synching>,
+    second_user: &User<Synching>,
+    progress_bar: &ProgressBar,
+) -> impl futures::Future<Output = ()> {
+    let mut first_user = first_user.clone();
+    let mut second_user = second_user.clone();
+    let progress_bar = progress_bar.clone();
+
+    async move {
+        let room_created = first_user.create_room().await;
+        if let Some(room_id) = room_created {
+            first_user.join_room(&room_id).await;
+            second_user.join_room(&room_id).await;
+        } else {
+            //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
+            log::info!("User {} couldn't create a room", first_user.id());
+        }
+        progress_bar.inc(1);
+    }
+}
+
+pub fn create_user(
+    server: String,
+    progress_bar: &ProgressBar,
+    tx: Sender<Event>,
+    i: usize,
+    retry_attempts: usize,
+    timestamp: u128,
+    retry_enabled: bool,
+) -> impl futures::Future<Output = Option<User<Synching>>> {
+    let progress_bar = progress_bar.clone();
+    async move {
+        let id = format!("user_{i}_{timestamp}");
+        for _ in 0..retry_attempts {
+            let user = User::new(&id, &server, retry_enabled, tx.clone()).await;
+
+            if let Some(mut user) = user {
+                if let Some(mut user) = user.register().await {
+                    if let Some(user) = user.login().await {
+                        log::info!("User is now synching: {}", user.id());
+                        progress_bar.inc(1);
+                        return Some(user.sync().await);
+                    }
+                }
+            }
+        }
+
+        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
+        log::info!("Couldn't init a user");
+        progress_bar.inc(1);
+        None
     }
 }
 
