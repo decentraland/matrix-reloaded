@@ -1,6 +1,11 @@
 use crate::events::Event;
 use crate::text::get_random_string;
 use indicatif::ProgressBar;
+use crate::text::{create_progress_bar, get_random_string};
+use crate::time::time_now;
+use crate::users_state::{load_users, save_users, SavedUserState};
+use crate::Configuration;
+use futures::StreamExt;
 use matrix_sdk::config::RequestConfig;
 use matrix_sdk::room::Room;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy, UiaaResponse};
@@ -432,6 +437,103 @@ fn get_homeserver_url<'a>(homeserver: &'a str, protocol: Option<&'a str>) -> (&'
     } else {
         let protocol = protocol.unwrap_or("https");
         (homeserver, format!("{protocol}://{homeserver}"))
+    }
+}
+
+async fn get_client(homeserver_url: String, retry_enabled: bool) -> Option<Client> {
+    log::info!("Attempt to create a client with id {}", user_id);
+
+    let request_config = if retry_enabled {
+        RequestConfig::new().retry_timeout(Duration::from_secs(30))
+    } else {
+        RequestConfig::new()
+            .disable_retry()
+            .timeout(Duration::from_secs(30))
+    };
+
+    let client = Client::builder()
+        .request_config(request_config)
+        .homeserver_url(homeserver_url)
+        .build()
+        .await;
+    if client.is_err() {
+        log::info!("Failed to create client");
+        return None;
+    }
+
+    return Some(client.unwrap());
+}
+
+pub async fn create_desired_users(config: &Configuration) {
+    let users_to_create = config.user_count;
+
+    let timestamp = time_now();
+
+    let mut users = vec![];
+    let progress_bar = create_progress_bar(
+        "Init users".to_string(),
+        users_to_create.try_into().unwrap(),
+    );
+    progress_bar.tick();
+
+    let homeserver_url = config.homeserver_url.clone();
+
+    let mut client = get_client(homeserver_url.clone(), config.retry_request_config).await;
+
+    let futures = (0..users_to_create).map(|i| {
+        create_user(
+            homeserver_url.clone(),
+            &progress_bar,
+            i,
+            config.user_creation_retry_attempts,
+            timestamp,
+            config.retry_request_config,
+            &client,
+        )
+    });
+
+    let stream_iter = futures::stream::iter(futures);
+    let mut buffered_iter = stream_iter.buffer_unordered(config.user_creation_throughput);
+
+    while let Some(user) = buffered_iter.next().await {
+        if let Some(user) = user {
+            users.push(user);
+        }
+    }
+
+    progress_bar.finish_and_clear();
+
+    let mut current_users = load_users(config.users_filename.clone());
+
+    current_users.add_user(
+        timestamp,
+        SavedUserState {
+            homeserver_url: homeserver_url.clone(),
+            amount: config.user_count,
+            friendships: vec![],
+        },
+    );
+
+    save_users(&current_users, config.users_filename.clone());
+}
+
+fn create_user(
+    server: String,
+    progress_bar: &ProgressBar,
+    i: i64,
+    retry_attempts: usize,
+    timestamp: u128,
+    retry_enabled: bool,
+    client: &Client,
+) -> impl futures::Future<Output = Option<User<Synching>>> {
+    let progress_bar = progress_bar.clone();
+    async move {
+        let id = format!("user_{i}_{timestamp}");
+
+        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
+        log::info!("Couldn't init a user");
+        progress_bar.inc(1);
+        None
     }
 }
 
