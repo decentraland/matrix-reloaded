@@ -12,11 +12,11 @@ tick_duration_in_secs = 5
 max_users_to_act_per_tick = 100
 # Time to wait for all messages to be delivered, after that time they are considered as lost
 waiting_period = 30
-# Enable retry request configuration 
+# Enable retry request configuration
 retry_request_config = false
 # User creation retry attempts (not related to retry_request_config)
 user_creation_retry_attempts = 5
-# Max throughput allowed for users registration 
+# Max throughput allowed for users registration
 user_creation_throughput = 10
-# Max throughput allowed for room creation 
+# Max throughput allowed for room creation
 room_creation_throughput = 20
