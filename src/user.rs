@@ -1,11 +1,11 @@
 use crate::events::Event;
 use crate::text::get_random_string;
-use indicatif::ProgressBar;
 use crate::text::{create_progress_bar, get_random_string};
 use crate::time::time_now;
 use crate::users_state::{load_users, save_users, SavedUserState};
 use crate::Configuration;
 use futures::StreamExt;
+use indicatif::ProgressBar;
 use indicatif::ProgressBar;
 use matrix_sdk::config::RequestConfig;
 use matrix_sdk::room::Room;
@@ -92,13 +92,11 @@ impl User<Disconnected> {
         tx: Sender<Event>,
     ) -> Option<User<Disconnected>> {
         // TODO: check which protocol we want to use: http or https (defaulting to https)
-        let (homeserver_no_protocol, homeserver_url) = get_homeserver_url(homeserver, None);
+        let (homeserver_no_protocol, _) = get_homeserver_url(homeserver, None);
+
+        let client = get_client(homeserver, retry_enabled).await;
 
         let user_id = UserId::parse(format!("@{id}:{homeserver_no_protocol}").as_str()).unwrap();
-
-        let instant = Instant::now();
-
-        log::info!("Attempt to create a client with id {}", user_id);
 
         let timeout = Duration::from_secs(30);
         let request_config = if retry_enabled {
@@ -117,16 +115,28 @@ impl User<Disconnected> {
             log::info!("Failed to create client");
             return None;
         }
+        Some(Self {
+            id: user_id,
+            client: Arc::new(tokio::sync::Mutex::new(client.unwrap())),
+            tx,
+            state: Disconnected {},
+        })
+    }
 
-        log::info!(
-            "New client created {} {}",
-            user_id,
-            instant.elapsed().as_millis()
-        );
+    pub async fn new_with_client(
+        id: &str,
+        homeserver: &str,
+        tx: Sender<Event>,
+        client: Arc<tokio::sync::Mutex<Client>>,
+    ) -> Option<User<Disconnected>> {
+        // TODO: check which protocol we want to use: http or https (defaulting to https)
+        let (homeserver_no_protocol, _) = get_homeserver_url(homeserver, None);
+
+        let user_id = UserId::parse(format!("@{id}:{homeserver_no_protocol}").as_str()).unwrap();
 
         Some(Self {
             id: user_id,
-            client: Arc::new(Mutex::new(client.unwrap())),
+            client,
             tx,
             state: Disconnected {
                 retry_enabled,
@@ -430,19 +440,23 @@ async fn on_room_message(
 
 /// This function returns homeserver domain and url, ex:
 ///  - get_homeserver_url("matrix.domain.com") => ("matrix.domain.com", "https://matrix.domain.com")
-fn get_homeserver_url<'a>(homeserver: &'a str, protocol: Option<&'a str>) -> (&'a str, String) {
+fn get_homeserver_url(homeserver: &str, protocol: Option<&str>) -> (String, String) {
     let regex = Regex::new(r"https?://").unwrap();
     if regex.is_match(homeserver) {
         let parts: Vec<&str> = regex.splitn(homeserver, 2).collect();
-        (parts[1], homeserver.to_string())
+        (parts[1].to_string(), homeserver.to_string())
     } else {
         let protocol = protocol.unwrap_or("https");
-        (homeserver, format!("{protocol}://{homeserver}"))
+        (homeserver.to_string(), format!("{protocol}://{homeserver}"))
     }
 }
 
-async fn get_client(homeserver_url: String, retry_enabled: bool) -> Option<Client> {
-    log::info!("Attempt to create a client with id ");
+async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client> {
+    let instant = Instant::now();
+
+    let (_, homeserver) = get_homeserver_url(homeserver_url, None);
+
+    log::info!("Attempt to create a client");
 
     let request_config = if retry_enabled {
         RequestConfig::new().retry_timeout(Duration::from_secs(30))
@@ -451,21 +465,25 @@ async fn get_client(homeserver_url: String, retry_enabled: bool) -> Option<Clien
             .disable_retry()
             .timeout(Duration::from_secs(30))
     };
+    println!("got request config");
 
     let client = Client::builder()
         .request_config(request_config)
-        .homeserver_url(homeserver_url)
+        .homeserver_url(homeserver)
         .build()
         .await;
     if client.is_err() {
+        println!("got request config error {}", client.err().unwrap());
         log::info!("Failed to create client");
         return None;
     }
 
-    return Some(client.unwrap());
+    log::info!("New client created {}", instant.elapsed().as_millis());
+
+    Some(client.unwrap())
 }
 
-pub async fn create_desired_users(config: &Configuration) {
+pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     let users_to_create = config.user_count;
 
     let timestamp = time_now();
@@ -479,7 +497,7 @@ pub async fn create_desired_users(config: &Configuration) {
 
     let homeserver_url = config.homeserver_url.clone();
 
-    let mut client = get_client(homeserver_url.clone(), config.retry_request_config)
+    let client = get_client(&homeserver_url.clone(), config.retry_request_config)
         .await
         .unwrap();
 
@@ -490,8 +508,8 @@ pub async fn create_desired_users(config: &Configuration) {
             i,
             config.user_creation_retry_attempts,
             timestamp,
-            config.retry_request_config,
-            &client,
+            client.clone(),
+            tx.clone(),
         )
     });
 
@@ -526,12 +544,25 @@ fn create_user(
     i: i64,
     retry_attempts: usize,
     timestamp: u128,
-    retry_enabled: bool,
-    client: &Client,
-) -> impl futures::Future<Output = Option<User<Synching>>> {
+    client: Client,
+    tx: Sender<Event>,
+) -> impl futures::Future<Output = Option<User<Registered>>> {
+    let client_arc = Arc::new(tokio::sync::Mutex::new(client));
     let progress_bar = progress_bar.clone();
     async move {
         let id = format!("user_{i}_{timestamp}");
+
+        for _ in 0..retry_attempts {
+            let user = User::new_with_client(&id, &server, tx.clone(), client_arc.clone()).await;
+
+            if let Some(mut user) = user {
+                if let Some(user) = user.register().await {
+                    log::info!("User {} is now registered", user.id());
+                    progress_bar.inc(1);
+                    return Some(user);
+                }
+            }
+        }
 
         //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
         log::info!("Couldn't init a user");
@@ -547,7 +578,7 @@ mod tests {
     fn homeserver_arg_can_start_with_https() {
         let homeserver_arg = "https://matrix.domain.com";
         assert_eq!(
-            ("matrix.domain.com", homeserver_arg.to_string()),
+            ("matrix.domain.com".to_string(), homeserver_arg.to_string()),
             get_homeserver_url(homeserver_arg, None)
         );
     }
@@ -557,7 +588,7 @@ mod tests {
         let homeserver_arg = "http://matrix.domain.com";
 
         assert_eq!(
-            ("matrix.domain.com", homeserver_arg.to_string()),
+            ("matrix.domain.com".to_string(), homeserver_arg.to_string()),
             get_homeserver_url(homeserver_arg, None)
         );
     }
@@ -568,7 +599,10 @@ mod tests {
         let expected_homeserver_url = "https://matrix.domain.com";
 
         assert_eq!(
-            (homeserver_arg, expected_homeserver_url.to_string()),
+            (
+                homeserver_arg.to_string(),
+                expected_homeserver_url.to_string()
+            ),
             get_homeserver_url(homeserver_arg, None)
         );
     }
@@ -579,7 +613,10 @@ mod tests {
         let expected_homeserver_url = "http://matrix.domain.com";
 
         assert_eq!(
-            (homeserver_arg, expected_homeserver_url.to_string()),
+            (
+                homeserver_arg.to_string(),
+                expected_homeserver_url.to_string()
+            ),
             get_homeserver_url(homeserver_arg, Some("http"))
         );
     }

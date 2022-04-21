@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::{collections::HashMap, fs::File, io::Write};
 
 use matrix_sdk::ruma::exports::serde_json;
@@ -49,7 +50,14 @@ pub fn save_users(users: &SavedUsers, filename: String) {
 }
 
 pub fn load_users(file: String) -> SavedUsers {
+    if !Path::new(&file).exists() {
+        return SavedUsers {
+            users: HashMap::new(),
+        };
+    }
+
     let file_content = std::fs::read_to_string(file).unwrap();
+
     let res: SavedUsers = serde_json::from_str(&file_content).unwrap();
 
     res

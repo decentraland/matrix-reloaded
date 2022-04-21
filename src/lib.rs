@@ -16,6 +16,8 @@ use time::time_now;
 use tokio::sync::mpsc::{self, Sender};
 use tokio_context::task::TaskController;
 use user::{create_user, join_users_to_room, Synching, User};
+use tokio::time::interval;
+use user::{create_desired_users, Synching, User};
 
 use crate::events::Event;
 
@@ -282,6 +284,12 @@ impl State {
             }
         }
     }
+
+    pub async fn create_users(&mut self) {
+        let (tx, _rx) = mpsc::channel::<Event>(100);
+        create_desired_users(&self.config, tx.clone()).await;
+    }
+}
 
     pub fn generate_report(&self, execution_id: u128, step: usize, report: MetricsReport) {
         let result = create_dir_all(format!("{}/{}", self.config.output_dir, execution_id));
