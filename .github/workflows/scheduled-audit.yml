@@ -1,7 +1,9 @@
 name: Security audit
+
 on:
   schedule:
     - cron: '0 0 * * *'
+
 jobs:
   audit:
     runs-on: ubuntu-latest
@@ -10,4 +12,3 @@ jobs:
       - uses: actions-rs/audit-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-
