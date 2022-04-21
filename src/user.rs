@@ -584,7 +584,7 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
         timestamp,
         SavedUserState {
             homeserver_url: homeserver_url.clone(),
-            amount: config.user_count,
+            available: config.user_count,
             friendships: vec![],
         },
     );

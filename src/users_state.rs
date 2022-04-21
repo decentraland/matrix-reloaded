@@ -9,7 +9,7 @@ use serde_with::DisplayFromStr;
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct SavedUserState {
     pub homeserver_url: String,
-    pub amount: i64,
+    pub available: i64,
     pub friendships: Vec<(usize, usize)>,
 }
 
@@ -20,27 +20,24 @@ pub struct SavedUsers {
     pub users: HashMap<u128, SavedUserState>,
 }
 
-pub struct AvailableUsers {
-    pub total: i64,
-    pub users: Vec<(u128, i64)>,
-}
-
 impl SavedUsers {
-    pub fn get_available_users(&self, server: String) -> AvailableUsers {
-        let mut available_users: i64 = 0;
-        let mut users = vec![];
+    pub fn get_available_users(&self, server: String) -> SavedUsers {
+        let mut users: HashMap<u128, SavedUserState> = HashMap::new();
 
         for (timestamp, state) in &self.users {
             if state.homeserver_url == server {
-                available_users += state.amount;
-                users.push((*timestamp, state.amount));
+                users.insert(
+                    *timestamp,
+                    SavedUserState {
+                        available: state.available,
+                        friendships: state.friendships.clone(),
+                        homeserver_url: state.homeserver_url.clone(),
+                    },
+                );
             }
         }
 
-        AvailableUsers {
-            total: available_users,
-            users,
-        }
+        SavedUsers { users }
     }
 
     pub fn add_user(&mut self, key: u128, value: SavedUserState) {
@@ -91,7 +88,7 @@ mod tests {
             123,
             SavedUserState {
                 homeserver_url: "Asd".to_string(),
-                amount: 10,
+                available: 10,
                 friendships: vec![],
             },
         );
@@ -99,7 +96,7 @@ mod tests {
             124,
             SavedUserState {
                 homeserver_url: "Asd".to_string(),
-                amount: 10,
+                available: 10,
                 friendships: vec![],
             },
         );
@@ -107,7 +104,7 @@ mod tests {
             125,
             SavedUserState {
                 homeserver_url: "Asd".to_string(),
-                amount: 10,
+                available: 10,
                 friendships: vec![],
             },
         );
