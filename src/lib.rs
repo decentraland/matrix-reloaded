@@ -122,7 +122,6 @@ impl State {
     }
 
     async fn init_users(&mut self, tx: Sender<Event>) {
-        let timestamp = time_now();
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
         let server = &self.config.homeserver_url;

@@ -486,7 +486,6 @@ async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client>
             .disable_retry()
             .timeout(Duration::from_secs(30))
     };
-    println!("got request config");
 
     let client = Client::builder()
         .request_config(request_config)
