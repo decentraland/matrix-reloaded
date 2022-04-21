@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DurationSeconds;
 use std::collections::hash_map::Iter;
+
 use std::fmt::Display;
 use std::fs::{create_dir_all, File};
 use std::thread::sleep;
@@ -86,13 +87,13 @@ impl State {
         let server = config.homeserver_url.clone();
 
         let _available_users =
-            load_users(config.users_filename.clone()).get_available_users(server.clone());
+            load_users(config.users_filename.clone()).get_available_users(server);
 
         let mut available_users = vec![];
 
         for (timestamp, state) in _available_users.users {
             available_users.push((
-                timestamp.clone(),
+                timestamp,
                 SavedUserState {
                     available: state.available,
                     friendships: state.friendships.clone(),
@@ -105,9 +106,9 @@ impl State {
             config,
             friendships: vec![],
             users: vec![],
-            available_users,
+            current_state_available_users: available_users[0].1.available,
             current_state_index: 0,
-            current_state_available_users: 0,
+            available_users,
         }
     }
 
@@ -161,6 +162,7 @@ impl State {
             ));
 
             i += 1;
+            self.current_state_available_users -= 1;
         }
 
         let stream_iter = futures::stream::iter(futures);
@@ -215,6 +217,7 @@ impl State {
             let mut rng = rand::thread_rng();
             let first_user = self.users.iter().choose(&mut rng).unwrap();
             let second_user = self.users.iter().choose(&mut rng).unwrap();
+
             if first_user.id() == second_user.id() {
                 continue;
             }
