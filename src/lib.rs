@@ -43,6 +43,7 @@ pub struct Configuration {
     max_users_to_act_per_tick: usize,
     waiting_period: usize,
     retry_request_config: bool,
+    respect_login_well_known: bool,
     user_creation_retry_attempts: usize,
     user_creation_throughput: usize,
     room_creation_throughput: usize,
@@ -76,9 +77,10 @@ impl State {
         let timestamp = time_now();
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
-        let server = self.config.homeserver_url.clone();
+        let server = &self.config.homeserver_url;
         let retry_enabled = self.config.retry_request_config;
         let retry_attempts = self.config.user_creation_retry_attempts;
+        let respect_login_well_known = self.config.respect_login_well_known;
 
         let progress_bar = create_progress_bar(
             "Init users".to_string(),
@@ -87,14 +89,15 @@ impl State {
         progress_bar.tick();
 
         let mut user_creations_buffer = iter((actual_users..desired_users).map(|i| {
+            let id = format!("{i}_{timestamp}");
             create_user(
-                server.clone(),
+                id,
+                server,
                 &progress_bar,
                 tx.clone(),
-                i,
                 retry_attempts,
-                timestamp,
                 retry_enabled,
+                respect_login_well_known,
             )
         }))
         .buffer_unordered(self.config.user_creation_throughput);
@@ -118,7 +121,7 @@ impl State {
         let amount_of_friendships = self.calculate_step_friendships();
 
         let progress_bar = create_progress_bar(
-            "Init friendhips".to_string(),
+            "Init friendships".to_string(),
             (amount_of_friendships - self.friendships.len())
                 .try_into()
                 .unwrap(),
