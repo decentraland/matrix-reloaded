@@ -20,6 +20,7 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+      - uses: Swatinem/rust-cache@v1.3.0
       - uses: actions-rs/cargo@v1
         with:
           command: test
@@ -51,6 +52,7 @@ jobs:
           toolchain: stable
           override: true
           components: clippy
+      - uses: Swatinem/rust-cache@v1.3.0
       - uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -69,6 +71,8 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+
+      - uses: Swatinem/rust-cache@v1.3.0
 
       - name: Run cargo-tarpaulin
         uses: actions-rs/tarpaulin@v0.1
