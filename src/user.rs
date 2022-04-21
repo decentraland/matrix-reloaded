@@ -34,7 +34,10 @@ use tokio::sync::Mutex;
 
 const PASSWORD: &str = "asdfasdf";
 
-pub struct Disconnected;
+pub struct Disconnected {
+    retry_enabled: bool,
+    respect_login_well_known: bool,
+}
 pub struct Registered;
 pub struct LoggedIn;
 #[derive(Clone)]
@@ -79,6 +82,7 @@ impl User<Disconnected> {
         id: &str,
         homeserver: &str,
         retry_enabled: bool,
+        respect_login_well_known: bool,
         tx: Sender<Event>,
     ) -> Option<User<Disconnected>> {
         // TODO: check which protocol we want to use: http or https (defaulting to https)
@@ -100,6 +104,7 @@ impl User<Disconnected> {
         let client = Client::builder()
             .request_config(request_config)
             .homeserver_url(homeserver_url)
+            .respect_login_well_known(respect_login_well_known)
             .build()
             .await;
         if client.is_err() {
@@ -117,7 +122,10 @@ impl User<Disconnected> {
             id: user_id,
             client: Arc::new(Mutex::new(client.unwrap())),
             tx,
-            state: Disconnected {},
+            state: Disconnected {
+                retry_enabled,
+                respect_login_well_known,
+            },
         })
     }
 
@@ -154,7 +162,8 @@ impl User<Disconnected> {
                         let user = User::new(
                             self.id.localpart(),
                             self.id.server_name().as_str(),
-                            false,
+                            self.state.retry_enabled,
+                            self.state.respect_login_well_known,
                             self.tx.clone(),
                         )
                         .await
@@ -350,20 +359,27 @@ pub fn join_users_to_room(
     }
 }
 
-pub fn create_user(
-    server: String,
-    progress_bar: &ProgressBar,
+pub fn create_user<'a>(
+    id: String,
+    server: &'a str,
+    progress_bar: &'a ProgressBar,
     tx: Sender<Event>,
-    i: usize,
     retry_attempts: usize,
-    timestamp: u128,
     retry_enabled: bool,
-) -> impl futures::Future<Output = Option<User<Synching>>> {
+    respect_login_well_known: bool,
+) -> impl futures::Future<Output = Option<User<Synching>>> + 'a {
     let progress_bar = progress_bar.clone();
     async move {
-        let id = format!("user_{i}_{timestamp}");
+        let id = format!("user_{id}");
         for _ in 0..retry_attempts {
-            let user = User::new(&id, &server, retry_enabled, tx.clone()).await;
+            let user = User::new(
+                &id,
+                server,
+                retry_enabled,
+                respect_login_well_known,
+                tx.clone(),
+            )
+            .await;
 
             if let Some(mut user) = user {
                 if let Some(mut user) = user.register().await {
