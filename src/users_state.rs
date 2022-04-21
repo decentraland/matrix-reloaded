@@ -20,15 +20,27 @@ pub struct SavedUsers {
     pub users: HashMap<u128, SavedUserState>,
 }
 
-impl SavedUsers {
-    pub fn get_available_user_count(&self) -> i64 {
-        let mut available_users: i64 = 0;
+pub struct AvailableUsers {
+    pub total: i64,
+    pub users: Vec<(u128, i64)>,
+}
 
-        for state in self.users.values() {
-            available_users += state.amount;
+impl SavedUsers {
+    pub fn get_available_users(&self, server: String) -> AvailableUsers {
+        let mut available_users: i64 = 0;
+        let mut users = vec![];
+
+        for (timestamp, state) in &self.users {
+            if state.homeserver_url == server {
+                available_users += state.amount;
+                users.push((*timestamp, state.amount));
+            }
         }
 
-        available_users
+        AvailableUsers {
+            total: available_users,
+            users,
+        }
     }
 
     pub fn add_user(&mut self, key: u128, value: SavedUserState) {

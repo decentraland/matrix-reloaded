@@ -14,12 +14,14 @@ use std::time::{Duration, Instant};
 use text::create_progress_bar;
 use time::time_now;
 use tokio::sync::mpsc::{self, Sender};
-use tokio_context::task::TaskController;
-use user::{create_user, join_users_to_room, Synching, User};
 use tokio::time::interval;
+use tokio_context::task::TaskController;
 use user::{create_desired_users, Synching, User};
+use user::{create_user, join_users_to_room, Synching, User};
+use users_state::{load_users, AvailableUsers};
 
 use crate::events::Event;
+use crate::user::Registered;
 
 mod events;
 mod friendship;
@@ -82,7 +84,7 @@ impl State {
         }
     }
 
-    async fn init_users(&mut self, tx: Sender<Event>) {
+    async fn init_users(&mut self, tx: Sender<Event>, available_users: &AvailableUsers) {
         let timestamp = time_now();
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
@@ -97,19 +99,19 @@ impl State {
         );
         progress_bar.tick();
 
-        let mut user_creations_buffer = iter((actual_users..desired_users).map(|i| {
-            let id = format!("{i}_{timestamp}");
-            create_user(
-                id,
-                server,
+        let futures = (actual_users..desired_users).map(|i| {
+            sync_user(
+                server.clone(),
                 &progress_bar,
                 tx.clone(),
                 retry_attempts,
                 retry_enabled,
                 respect_login_well_known,
             )
-        }))
-        .buffer_unordered(self.config.user_creation_throughput);
+        });
+
+        let stream_iter = futures::stream::iter(futures);
+        -      let mut buffered_iter = stream_iter.buffer_unordered(self.config.user_creation_throughput);
 
         while let Some(user) = user_creations_buffer.next().await {
             if let Some(user) = user {
@@ -257,6 +259,17 @@ impl State {
     pub async fn run(&mut self) {
         println!("{:#?}\n", self.config);
 
+        let server = self.config.homeserver_url.clone();
+
+        let desired_users = self.config.users_per_step * self.config.total_steps;
+
+        let available_users =
+            load_users(self.config.users_filename.clone()).get_available_users(server.clone());
+
+        if available_users.total < desired_users.try_into().unwrap() {
+            panic!("There are only {} available users to run the test on this server, but for this test {} users are needed, please create more and try again", available_users.total, desired_users);
+        }
+
         let execution_id = time_now();
 
         let (tx, rx) = mpsc::channel::<Event>(100);
@@ -267,7 +280,7 @@ impl State {
             let handle = metrics.run();
 
             // step warm up
-            self.init_users(tx.clone()).await;
+            self.init_users(tx.clone(), &available_users).await;
             self.init_friendships().await;
 
             // step running
@@ -289,7 +302,6 @@ impl State {
         let (tx, _rx) = mpsc::channel::<Event>(100);
         create_desired_users(&self.config, tx.clone()).await;
     }
-}
 
     pub fn generate_report(&self, execution_id: u128, step: usize, report: MetricsReport) {
         let result = create_dir_all(format!("{}/{}", self.config.output_dir, execution_id));
@@ -324,5 +336,36 @@ impl State {
         serde_yaml::to_writer(buffer, &report).expect("Couldn't write report to file");
         println!("Step report generated: {}\n", path);
         println!("{:#?}\n", report);
+    }
+}
+
+fn sync_user(
+    server: String,
+    progress_bar: &ProgressBar,
+    tx: Sender<Event>,
+    i: usize,
+    retry_attempts: usize,
+    timestamp: u128,
+    retry_enabled: bool,
+) -> impl futures::Future<Output = Option<User<Synching>>> {
+    let progress_bar = progress_bar.clone();
+    async move {
+        let id = format!("user_{i}_{timestamp}");
+        for _ in 0..retry_attempts {
+            let user = User::<Registered>::new(&id, &server, retry_enabled, tx.clone()).await;
+
+            if let Some(mut user) = user {
+                if let Some(user) = user.login().await {
+                    log::info!("User is now synching: {}", user.id());
+                    progress_bar.inc(1);
+                    return Some(user.sync().await);
+                }
+            }
+        }
+
+        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
+        log::info!("Couldn't init a user");
+        progress_bar.inc(1);
+        None
     }
 }

@@ -175,7 +175,7 @@ impl User<Disconnected> {
                 if let UiaaError(Server(Known(UiaaResponse::MatrixError(e)))) = e {
                     if e.kind == ErrorKind::UserInUse {
                         log::info!("Client already registered, proceed to Login {}", self.id());
-                        let user = User::new(
+                        let user = User::<Disconnected>::new(
                             self.id.localpart(),
                             self.id.server_name().as_str(),
                             self.state.retry_enabled,
@@ -201,6 +201,27 @@ impl User<Disconnected> {
 }
 
 impl User<Registered> {
+    pub async fn new(
+        id: &str,
+        homeserver: &str,
+        retry_enabled: bool,
+        tx: Sender<Event>,
+    ) -> Option<User<Registered>> {
+        // TODO: check which protocol we want to use: http or https (defaulting to https)
+        let (homeserver_no_protocol, _) = get_homeserver_url(homeserver, None);
+
+        let client = get_client(homeserver, retry_enabled).await;
+
+        let user_id = UserId::parse(format!("@{id}:{homeserver_no_protocol}").as_str()).unwrap();
+
+        Some(Self {
+            id: user_id,
+            client: Arc::new(tokio::sync::Mutex::new(client.unwrap())),
+            tx,
+            state: Registered {},
+        })
+    }
+
     pub async fn login(&mut self) -> Option<User<LoggedIn>> {
         let instant = Instant::now();
 
@@ -483,6 +504,39 @@ async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client>
     Some(client.unwrap())
 }
 
+fn create_user(
+    server: String,
+    progress_bar: &ProgressBar,
+    i: i64,
+    retry_attempts: usize,
+    timestamp: u128,
+    client: Client,
+    tx: Sender<Event>,
+) -> impl futures::Future<Output = Option<User<Registered>>> {
+    let client_arc = Arc::new(tokio::sync::Mutex::new(client));
+    let progress_bar = progress_bar.clone();
+    async move {
+        let id = format!("user_{i}_{timestamp}");
+
+        for _ in 0..retry_attempts {
+            let user = User::new_with_client(&id, &server, tx.clone(), client_arc.clone()).await;
+
+            if let Some(mut user) = user {
+                if let Some(user) = user.register().await {
+                    log::info!("User {} is now registered", user.id());
+                    progress_bar.inc(1);
+                    return Some(user);
+                }
+            }
+        }
+
+        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
+        log::info!("Couldn't init a user");
+        progress_bar.inc(1);
+        None
+    }
+}
+
 pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     let users_to_create = config.user_count;
 
@@ -536,39 +590,6 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     );
 
     save_users(&current_users, config.users_filename.clone());
-}
-
-fn create_user(
-    server: String,
-    progress_bar: &ProgressBar,
-    i: i64,
-    retry_attempts: usize,
-    timestamp: u128,
-    client: Client,
-    tx: Sender<Event>,
-) -> impl futures::Future<Output = Option<User<Registered>>> {
-    let client_arc = Arc::new(tokio::sync::Mutex::new(client));
-    let progress_bar = progress_bar.clone();
-    async move {
-        let id = format!("user_{i}_{timestamp}");
-
-        for _ in 0..retry_attempts {
-            let user = User::new_with_client(&id, &server, tx.clone(), client_arc.clone()).await;
-
-            if let Some(mut user) = user {
-                if let Some(user) = user.register().await {
-                    log::info!("User {} is now registered", user.id());
-                    progress_bar.inc(1);
-                    return Some(user);
-                }
-            }
-        }
-
-        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
-        log::info!("Couldn't init a user");
-        progress_bar.inc(1);
-        None
-    }
 }
 
 #[cfg(test)]
