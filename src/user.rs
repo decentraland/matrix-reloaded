@@ -1,14 +1,14 @@
 use crate::events::Event;
 use crate::text::get_random_string;
+use indicatif::ProgressBar;
 use matrix_sdk::config::RequestConfig;
 use matrix_sdk::room::Room;
-use matrix_sdk::ruma::api::client::error::ErrorKind;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy, UiaaResponse};
 use matrix_sdk::ruma::api::error::FromHttpResponseError::Server;
 use matrix_sdk::ruma::api::error::ServerError::Known;
 use matrix_sdk::ruma::{
     api::client::{
-        account::register::v3::Request as RegistrationRequest,
+        account::register::v3::Request as RegistrationRequest, error::ErrorKind,
         room::create_room::v3::Request as CreateRoomRequest,
     },
     assign,
@@ -28,12 +28,16 @@ use regex::Regex;
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use strum::Display;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 
 const PASSWORD: &str = "asdfasdf";
 
-pub struct Disconnected;
+pub struct Disconnected {
+    retry_enabled: bool,
+    respect_login_well_known: bool,
+}
 pub struct Registered;
 pub struct LoggedIn;
 #[derive(Clone)]
@@ -44,7 +48,7 @@ pub struct Synching {
 #[derive(Clone)]
 pub struct User<State> {
     id: Box<UserId>,
-    client: Arc<tokio::sync::Mutex<Client>>,
+    client: Arc<Mutex<Client>>,
     tx: Sender<Event>,
     state: State,
 }
@@ -62,7 +66,9 @@ impl<State> User<State> {
     }
 }
 
-#[derive(Serialize, Debug, Eq, Hash, PartialEq, Clone)]
+#[derive(Serialize, Debug, Eq, Hash, PartialEq, Clone, Display)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum UserRequest {
     Register,
     Login,
@@ -76,6 +82,7 @@ impl User<Disconnected> {
         id: &str,
         homeserver: &str,
         retry_enabled: bool,
+        respect_login_well_known: bool,
         tx: Sender<Event>,
     ) -> Option<User<Disconnected>> {
         // TODO: check which protocol we want to use: http or https (defaulting to https)
@@ -87,17 +94,17 @@ impl User<Disconnected> {
 
         log::info!("Attempt to create a client with id {}", user_id);
 
+        let timeout = Duration::from_secs(30);
         let request_config = if retry_enabled {
-            RequestConfig::new().retry_timeout(Duration::from_secs(30))
+            RequestConfig::new().retry_timeout(timeout)
         } else {
-            RequestConfig::new()
-                .disable_retry()
-                .timeout(Duration::from_secs(30))
+            RequestConfig::new().disable_retry().timeout(timeout)
         };
 
         let client = Client::builder()
             .request_config(request_config)
             .homeserver_url(homeserver_url)
+            .respect_login_well_known(respect_login_well_known)
             .build()
             .await;
         if client.is_err() {
@@ -113,9 +120,12 @@ impl User<Disconnected> {
 
         Some(Self {
             id: user_id,
-            client: Arc::new(tokio::sync::Mutex::new(client.unwrap())),
+            client: Arc::new(Mutex::new(client.unwrap())),
             tx,
-            state: Disconnected {},
+            state: Disconnected {
+                retry_enabled,
+                respect_login_well_known,
+            },
         })
     }
 
@@ -152,7 +162,8 @@ impl User<Disconnected> {
                         let user = User::new(
                             self.id.localpart(),
                             self.id.server_name().as_str(),
-                            false,
+                            self.state.retry_enabled,
+                            self.state.respect_login_well_known,
                             self.tx.clone(),
                         )
                         .await
@@ -291,16 +302,11 @@ impl User<Synching> {
         let client = self.client.lock().await;
         let rooms = self.state.rooms.lock().await;
 
-        let room = match rooms.len() {
-            0 => {
-                // if user is not present in any room, return
-                return;
-            }
-            1 => 0,
-            rooms_len => rand::thread_rng().gen_range(0..rooms_len),
-        };
+        if rooms.len() == 0 {
+            return;
+        }
 
-        let room_id = &rooms[room];
+        let room_id = &rooms[rand::thread_rng().gen_range(0..rooms.len())];
         let content = AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(
             get_random_string(),
         ));
@@ -325,7 +331,71 @@ impl User<Synching> {
                     }
                 }
             }
+        } else {
+            // TODO! check why this can be possible
         }
+    }
+}
+
+pub fn join_users_to_room(
+    first_user: &User<Synching>,
+    second_user: &User<Synching>,
+    progress_bar: &ProgressBar,
+) -> impl futures::Future<Output = ()> {
+    let mut first_user = first_user.clone();
+    let mut second_user = second_user.clone();
+    let progress_bar = progress_bar.clone();
+
+    async move {
+        let room_created = first_user.create_room().await;
+        if let Some(room_id) = room_created {
+            first_user.join_room(&room_id).await;
+            second_user.join_room(&room_id).await;
+        } else {
+            //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
+            log::info!("User {} couldn't create a room", first_user.id());
+        }
+        progress_bar.inc(1);
+    }
+}
+
+pub fn create_user<'a>(
+    id: String,
+    server: &'a str,
+    progress_bar: &'a ProgressBar,
+    tx: Sender<Event>,
+    retry_attempts: usize,
+    retry_enabled: bool,
+    respect_login_well_known: bool,
+) -> impl futures::Future<Output = Option<User<Synching>>> + 'a {
+    let progress_bar = progress_bar.clone();
+    async move {
+        let id = format!("user_{id}");
+        for _ in 0..retry_attempts {
+            let user = User::new(
+                &id,
+                server,
+                retry_enabled,
+                respect_login_well_known,
+                tx.clone(),
+            )
+            .await;
+
+            if let Some(mut user) = user {
+                if let Some(mut user) = user.register().await {
+                    if let Some(user) = user.login().await {
+                        log::info!("User is now synching: {}", user.id());
+                        progress_bar.inc(1);
+                        return Some(user.sync().await);
+                    }
+                }
+            }
+        }
+
+        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
+        log::info!("Couldn't init a user");
+        progress_bar.inc(1);
+        None
     }
 }
 
