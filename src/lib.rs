@@ -114,7 +114,7 @@ impl State {
     fn get_available_users(&self) -> i64 {
         let mut total = 0;
 
-        for (_, state) in self.available_users {
+        for (_, state) in &self.available_users {
             total += state.available;
         }
 
@@ -148,8 +148,9 @@ impl State {
 
             let users_index = self.available_users[self.current_state_index].1.available
                 - self.current_state_available_users;
+            let state_timestamp = self.available_users[self.current_state_index].0;
 
-            let user_id = format!("user_{i}_{timestamp}");
+            let user_id = format!("user_{users_index}_{state_timestamp}");
             futures.push(sync_user(
                 server.clone(),
                 user_id.clone(),
@@ -395,7 +396,6 @@ fn sync_user(
     progress_bar: &ProgressBar,
     tx: Sender<Event>,
     retry_attempts: usize,
-    timestamp: u128,
     retry_enabled: bool,
 ) -> impl futures::Future<Output = Option<User<Synching>>> {
     let progress_bar = progress_bar.clone();
