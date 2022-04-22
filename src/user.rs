@@ -539,9 +539,8 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     let mut current_users = load_users(config.users_filename.clone());
 
     current_users.add_user(
-        timestamp,
+        homeserver_url.clone(),
         SavedUserState {
-            homeserver_url: homeserver_url.clone(),
             available: config.user_count,
             friendships: vec![],
         },

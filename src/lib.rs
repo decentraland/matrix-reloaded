@@ -65,9 +65,8 @@ pub struct State {
     config: Configuration,
     friendships: Vec<Friendship>,
     users: Vec<User<Synching>>,
-    available_users: Vec<(u128, SavedUserState)>,
-    current_state_index: usize,
-    current_state_available_users: i64,
+    users_state: SavedUserState,
+    available_users: i64,
 }
 
 #[derive(serde::Serialize, Default, Debug)]
@@ -83,40 +82,21 @@ impl State {
     pub fn new(config: Configuration) -> Self {
         let server = config.homeserver_url.clone();
 
-        let _available_users =
-            load_users(config.users_filename.clone()).get_available_users(server);
+        let saved_users = load_users(config.users_filename.clone());
+        let _available_users = saved_users.get_available_users(server);
 
-        let mut available_users = vec![];
-
-        for (timestamp, state) in _available_users.users {
-            available_users.push((
-                timestamp,
-                SavedUserState {
-                    available: state.available,
-                    friendships: state.friendships.clone(),
-                    homeserver_url: state.homeserver_url.clone(),
-                },
-            ));
-        }
+        let users_state = SavedUserState {
+            available: _available_users.available,
+            friendships: _available_users.friendships.clone(),
+        };
 
         Self {
             config,
             friendships: vec![],
             users: vec![],
-            current_state_available_users: available_users[0].1.available,
-            current_state_index: 0,
-            available_users,
+            available_users: users_state.available,
+            users_state,
         }
-    }
-
-    fn get_available_users(&self) -> i64 {
-        let mut total = 0;
-
-        for (_, state) in &self.available_users {
-            total += state.available;
-        }
-
-        total
     }
 
     async fn init_users(&mut self, tx: Sender<Event>) {
@@ -136,17 +116,9 @@ impl State {
         let mut i = actual_users;
 
         while i < desired_users {
-            if self.current_state_available_users == 0 {
-                self.current_state_index += 1;
-                self.current_state_available_users =
-                    self.available_users[self.current_state_index].1.available;
-            }
+            let users_index = self.users_state.available - self.available_users;
 
-            let users_index = self.available_users[self.current_state_index].1.available
-                - self.current_state_available_users;
-            let state_timestamp = self.available_users[self.current_state_index].0;
-
-            let user_id = format!("user_{users_index}_{state_timestamp}");
+            let user_id = format!("user_{users_index}");
             futures.push(sync_user(
                 server.clone(),
                 user_id.clone(),
@@ -157,7 +129,7 @@ impl State {
             ));
 
             i += 1;
-            self.current_state_available_users -= 1;
+            self.available_users -= 1;
         }
 
         let stream_iter = futures::stream::iter(futures);
@@ -313,10 +285,8 @@ impl State {
 
         let desired_users = self.config.users_per_step * self.config.total_steps;
 
-        let available_count = self.get_available_users();
-
-        if available_count < desired_users.try_into().unwrap() {
-            panic!("There are only {} available users to run the test on this server, but for this test {} users are needed, please create more and try again", available_count, desired_users);
+        if self.available_users < desired_users.try_into().unwrap() {
+            panic!("There are only {} available users to run the test on this server, but for this test {} users are needed, please create more and try again", self.available_users, desired_users);
         }
 
         let execution_id = time_now();

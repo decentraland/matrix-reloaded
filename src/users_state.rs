@@ -8,7 +8,6 @@ use serde_with::DisplayFromStr;
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct SavedUserState {
-    pub homeserver_url: String,
     pub available: i64,
     pub friendships: Vec<(usize, usize)>,
 }
@@ -17,30 +16,15 @@ pub struct SavedUserState {
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct SavedUsers {
     #[serde_as(as = "HashMap<DisplayFromStr, _>")]
-    pub users: HashMap<u128, SavedUserState>,
+    pub users: HashMap<String, SavedUserState>,
 }
 
 impl SavedUsers {
-    pub fn get_available_users(&self, server: String) -> SavedUsers {
-        let mut users: HashMap<u128, SavedUserState> = HashMap::new();
-
-        for (timestamp, state) in &self.users {
-            if state.homeserver_url == server {
-                users.insert(
-                    *timestamp,
-                    SavedUserState {
-                        available: state.available,
-                        friendships: state.friendships.clone(),
-                        homeserver_url: state.homeserver_url.clone(),
-                    },
-                );
-            }
-        }
-
-        SavedUsers { users }
+    pub fn get_available_users(&self, server: String) -> &SavedUserState {
+        self.users.get(&server.clone()).unwrap()
     }
 
-    pub fn add_user(&mut self, key: u128, value: SavedUserState) {
+    pub fn add_user(&mut self, key: String, value: SavedUserState) {
         self.users.insert(key, value);
     }
 }
@@ -85,25 +69,22 @@ mod tests {
         };
 
         saved_state.users.insert(
-            123,
+            "Asd".to_string(),
             SavedUserState {
-                homeserver_url: "Asd".to_string(),
                 available: 10,
                 friendships: vec![],
             },
         );
         saved_state.users.insert(
-            124,
+            "Bsd".to_string(),
             SavedUserState {
-                homeserver_url: "Asd".to_string(),
                 available: 10,
                 friendships: vec![],
             },
         );
         saved_state.users.insert(
-            125,
+            "Csd".to_string(),
             SavedUserState {
-                homeserver_url: "Asd".to_string(),
                 available: 10,
                 friendships: vec![],
             },
