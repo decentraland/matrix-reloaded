@@ -450,28 +450,31 @@ async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client>
     Some(client.unwrap())
 }
 
-fn create_user(
+struct UserParams {
     server: String,
-    progress_bar: &ProgressBar,
+    progress_bar: ProgressBar,
     i: i64,
     retry_attempts: usize,
     timestamp: u128,
     client: Client,
     tx: Sender<Event>,
     respect_login_well_known: bool,
-) -> impl futures::Future<Output = Option<User<Registered>>> {
-    let client_arc = Arc::new(tokio::sync::Mutex::new(client));
-    let progress_bar = progress_bar.clone();
-    async move {
-        let id = format!("user_{i}_{timestamp}");
+}
 
-        for _ in 0..retry_attempts {
+fn create_user(user_params: UserParams) -> impl futures::Future<Output = Option<User<Registered>>> {
+    let client_arc = Arc::new(tokio::sync::Mutex::new(user_params.client));
+    let progress_bar = user_params.progress_bar.clone();
+
+    async move {
+        let id = format!("user_{}_{}", user_params.i, user_params.timestamp);
+
+        for _ in 0..user_params.retry_attempts {
             let user = User::new_with_client(
                 &id,
-                &server,
-                tx.clone(),
+                &user_params.server,
+                user_params.tx.clone(),
                 client_arc.clone(),
-                respect_login_well_known,
+                user_params.respect_login_well_known,
             )
             .await;
 
@@ -510,16 +513,16 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
         .unwrap();
 
     let futures = (0..users_to_create).map(|i| {
-        create_user(
-            homeserver_url.clone(),
-            &progress_bar,
+        create_user(UserParams {
+            server: homeserver_url.clone(),
+            progress_bar: progress_bar.clone(),
             i,
-            config.user_creation_retry_attempts,
+            retry_attempts: config.user_creation_retry_attempts,
             timestamp,
-            client.clone(),
-            tx.clone(),
-            config.respect_login_well_known,
-        )
+            client: client.clone(),
+            tx: tx.clone(),
+            respect_login_well_known: config.respect_login_well_known,
+        })
     });
 
     let stream_iter = futures::stream::iter(futures);
