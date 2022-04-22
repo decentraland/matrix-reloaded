@@ -1,11 +1,10 @@
 use crate::events::Event;
+use crate::text::create_progress_bar;
 use crate::text::get_random_string;
-use crate::text::{create_progress_bar, get_random_string};
 use crate::time::time_now;
 use crate::users_state::{load_users, save_users, SavedUserState};
 use crate::Configuration;
 use futures::StreamExt;
-use indicatif::ProgressBar;
 use indicatif::ProgressBar;
 use matrix_sdk::config::RequestConfig;
 use matrix_sdk::room::Room;
@@ -41,7 +40,7 @@ use tokio::sync::Mutex;
 const PASSWORD: &str = "asdfasdf";
 
 pub struct Disconnected {
-    retry_enabled: bool,
+    retry_enabled: Option<bool>,
     respect_login_well_known: bool,
 }
 pub struct Registered;
@@ -87,39 +86,26 @@ impl User<Disconnected> {
     pub async fn new(
         id: &str,
         homeserver: &str,
-        retry_enabled: bool,
+        retry_enabled: Option<bool>,
         respect_login_well_known: bool,
         tx: Sender<Event>,
     ) -> Option<User<Disconnected>> {
         // TODO: check which protocol we want to use: http or https (defaulting to https)
+
         let (homeserver_no_protocol, _) = get_homeserver_url(homeserver, None);
 
-        let client = get_client(homeserver, retry_enabled).await;
+        let client = get_client(homeserver, retry_enabled.unwrap_or(false)).await;
 
         let user_id = UserId::parse(format!("@{id}:{homeserver_no_protocol}").as_str()).unwrap();
 
-        let timeout = Duration::from_secs(30);
-        let request_config = if retry_enabled {
-            RequestConfig::new().retry_timeout(timeout)
-        } else {
-            RequestConfig::new().disable_retry().timeout(timeout)
-        };
-
-        let client = Client::builder()
-            .request_config(request_config)
-            .homeserver_url(homeserver_url)
-            .respect_login_well_known(respect_login_well_known)
-            .build()
-            .await;
-        if client.is_err() {
-            log::info!("Failed to create client");
-            return None;
-        }
         Some(Self {
             id: user_id,
             client: Arc::new(tokio::sync::Mutex::new(client.unwrap())),
             tx,
-            state: Disconnected {},
+            state: Disconnected {
+                retry_enabled,
+                respect_login_well_known,
+            },
         })
     }
 
@@ -128,6 +114,7 @@ impl User<Disconnected> {
         homeserver: &str,
         tx: Sender<Event>,
         client: Arc<tokio::sync::Mutex<Client>>,
+        respect_login_well_known: bool,
     ) -> Option<User<Disconnected>> {
         // TODO: check which protocol we want to use: http or https (defaulting to https)
         let (homeserver_no_protocol, _) = get_homeserver_url(homeserver, None);
@@ -139,7 +126,7 @@ impl User<Disconnected> {
             client,
             tx,
             state: Disconnected {
-                retry_enabled,
+                retry_enabled: None,
                 respect_login_well_known,
             },
         })
@@ -396,46 +383,6 @@ pub fn join_users_to_room(
     }
 }
 
-pub fn create_user<'a>(
-    id: String,
-    server: &'a str,
-    progress_bar: &'a ProgressBar,
-    tx: Sender<Event>,
-    retry_attempts: usize,
-    retry_enabled: bool,
-    respect_login_well_known: bool,
-) -> impl futures::Future<Output = Option<User<Synching>>> + 'a {
-    let progress_bar = progress_bar.clone();
-    async move {
-        let id = format!("user_{id}");
-        for _ in 0..retry_attempts {
-            let user = User::new(
-                &id,
-                server,
-                retry_enabled,
-                respect_login_well_known,
-                tx.clone(),
-            )
-            .await;
-
-            if let Some(mut user) = user {
-                if let Some(mut user) = user.register().await {
-                    if let Some(user) = user.login().await {
-                        log::info!("User is now synching: {}", user.id());
-                        progress_bar.inc(1);
-                        return Some(user.sync().await);
-                    }
-                }
-            }
-        }
-
-        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
-        log::info!("Couldn't init a user");
-        progress_bar.inc(1);
-        None
-    }
-}
-
 async fn on_room_message(
     event: OriginalSyncRoomMessageEvent,
     room: Room,
@@ -479,12 +426,12 @@ async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client>
 
     log::info!("Attempt to create a client");
 
+    let timeout = Duration::from_secs(30);
+
     let request_config = if retry_enabled {
-        RequestConfig::new().retry_timeout(Duration::from_secs(30))
+        RequestConfig::new().retry_timeout(timeout)
     } else {
-        RequestConfig::new()
-            .disable_retry()
-            .timeout(Duration::from_secs(30))
+        RequestConfig::new().disable_retry().timeout(timeout)
     };
 
     let client = Client::builder()
@@ -511,6 +458,7 @@ fn create_user(
     timestamp: u128,
     client: Client,
     tx: Sender<Event>,
+    respect_login_well_known: bool,
 ) -> impl futures::Future<Output = Option<User<Registered>>> {
     let client_arc = Arc::new(tokio::sync::Mutex::new(client));
     let progress_bar = progress_bar.clone();
@@ -518,7 +466,14 @@ fn create_user(
         let id = format!("user_{i}_{timestamp}");
 
         for _ in 0..retry_attempts {
-            let user = User::new_with_client(&id, &server, tx.clone(), client_arc.clone()).await;
+            let user = User::new_with_client(
+                &id,
+                &server,
+                tx.clone(),
+                client_arc.clone(),
+                respect_login_well_known,
+            )
+            .await;
 
             if let Some(mut user) = user {
                 if let Some(user) = user.register().await {
@@ -563,6 +518,7 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
             timestamp,
             client.clone(),
             tx.clone(),
+            config.respect_login_well_known,
         )
     });
 

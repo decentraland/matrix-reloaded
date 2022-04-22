@@ -8,21 +8,18 @@ use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DurationSeconds;
-use std::collections::hash_map::Iter;
 
-use std::fmt::Display;
 use std::fs::{create_dir_all, File};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use text::create_progress_bar;
 use time::time_now;
 use tokio::sync::mpsc::{self, Sender};
-use tokio::time::interval;
 use tokio_context::task::TaskController;
+use user::join_users_to_room;
 use user::{create_desired_users, Synching, User};
-use user::{create_user, join_users_to_room, Synching, User};
-use users_state::{load_users, AvailableUsers};
-use users_state::{load_users, SavedUserState};
+use users_state::load_users;
+use users_state::SavedUserState;
 
 use crate::events::Event;
 use crate::user::Registered;
@@ -128,7 +125,6 @@ impl State {
         let server = &self.config.homeserver_url;
         let retry_enabled = self.config.retry_request_config;
         let retry_attempts = self.config.user_creation_retry_attempts;
-        let respect_login_well_known = self.config.respect_login_well_known;
 
         let progress_bar = create_progress_bar(
             "Init users".to_string(),
@@ -158,7 +154,6 @@ impl State {
                 tx.clone(),
                 retry_attempts,
                 retry_enabled,
-                respect_login_well_known,
             ));
 
             i += 1;
@@ -166,7 +161,8 @@ impl State {
         }
 
         let stream_iter = futures::stream::iter(futures);
-        let mut buffered_iter = stream_iter.buffer_unordered(self.config.user_creation_throughput);
+        let mut user_creations_buffer =
+            stream_iter.buffer_unordered(self.config.user_creation_throughput);
 
         while let Some(user) = user_creations_buffer.next().await {
             if let Some(user) = user {
