@@ -96,8 +96,7 @@ async fn create_users(config: Configuration) {
 async fn delete_users(config: Configuration) {
     match config.timestamp {
         Some(_) => {
-            let mut state = State::new(config);
-            state.run().await
+            //TODO! Implement delete
         }
         None => {
             panic!("The timestamp of the users to be deleted must be present")
