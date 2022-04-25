@@ -39,7 +39,7 @@ use tokio::sync::Mutex;
 const PASSWORD: &str = "asdfasdf";
 
 pub struct Disconnected {
-    retry_enabled: Option<bool>,
+    retry_enabled: bool,
     respect_login_well_known: bool,
 }
 pub struct Registered;
@@ -85,7 +85,7 @@ impl User<Disconnected> {
     pub async fn new(
         id: &str,
         homeserver: &str,
-        retry_enabled: Option<bool>,
+        retry_enabled: bool,
         respect_login_well_known: bool,
         tx: Sender<Event>,
     ) -> Option<User<Disconnected>> {
@@ -93,7 +93,7 @@ impl User<Disconnected> {
 
         let (homeserver_no_protocol, _) = get_homeserver_url(homeserver, None);
 
-        let client = get_client(homeserver, retry_enabled.unwrap_or(false)).await;
+        let client = get_client(homeserver, retry_enabled).await;
 
         let user_id = UserId::parse(format!("@{id}:{homeserver_no_protocol}").as_str()).unwrap();
 
@@ -113,6 +113,7 @@ impl User<Disconnected> {
         homeserver: &str,
         tx: Sender<Event>,
         client: Arc<tokio::sync::Mutex<Client>>,
+        retry_enabled: bool,
         respect_login_well_known: bool,
     ) -> Option<User<Disconnected>> {
         // TODO: check which protocol we want to use: http or https (defaulting to https)
@@ -125,7 +126,7 @@ impl User<Disconnected> {
             client,
             tx,
             state: Disconnected {
-                retry_enabled: None,
+                retry_enabled,
                 respect_login_well_known,
             },
         })
@@ -438,15 +439,19 @@ async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client>
         .homeserver_url(homeserver)
         .build()
         .await;
-    if client.is_err() {
-        println!("got request config error {}", client.err().unwrap());
-        log::info!("Failed to create client");
-        return None;
+
+    match client {
+        Ok(client_value) => {
+            log::info!("New client created {}", instant.elapsed().as_millis());
+
+            Some(client_value)
+        }
+        Err(_) => {
+            println!("got request config error {}", client.err().unwrap());
+            log::info!("Failed to create client");
+            None
+        }
     }
-
-    log::info!("New client created {}", instant.elapsed().as_millis());
-
-    Some(client.unwrap())
 }
 
 struct UserParams {
@@ -457,6 +462,7 @@ struct UserParams {
     client: Client,
     tx: Sender<Event>,
     respect_login_well_known: bool,
+    retry_enabled: bool,
 }
 
 fn create_user(user_params: UserParams) -> impl futures::Future<Output = Option<User<Registered>>> {
@@ -472,6 +478,7 @@ fn create_user(user_params: UserParams) -> impl futures::Future<Output = Option<
                 &user_params.server,
                 user_params.tx.clone(),
                 client_arc.clone(),
+                user_params.retry_enabled,
                 user_params.respect_login_well_known,
             )
             .await;
@@ -506,7 +513,7 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
 
     let homeserver_url = config.homeserver_url.clone();
 
-    let client = get_client(&homeserver_url.clone(), config.retry_request_config)
+    let client = get_client(&homeserver_url, config.retry_request_config)
         .await
         .unwrap();
 
@@ -525,6 +532,7 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
             retry_attempts: config.user_creation_retry_attempts,
             client: client.clone(),
             tx: tx.clone(),
+            retry_enabled: config.retry_request_config,
             respect_login_well_known: config.respect_login_well_known,
         })
     });
