@@ -519,10 +519,7 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
 
     let _actual_users = current_users.get_available_users(homeserver_url.clone());
 
-    let actual_user_count = match _actual_users {
-        Some(val) => val.available,
-        None => 0,
-    };
+    let actual_user_count = _actual_users.map(|users| users.available).unwrap_or(0);
 
     let futures = (actual_user_count..(users_to_create + actual_user_count)).map(|i| {
         create_user(UserParams {
