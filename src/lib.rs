@@ -8,6 +8,7 @@ use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DurationSeconds;
+
 use std::fs::{create_dir_all, File};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -15,9 +16,13 @@ use text::create_progress_bar;
 use time::time_now;
 use tokio::sync::mpsc::{self, Sender};
 use tokio_context::task::TaskController;
-use user::{create_user, join_users_to_room, Synching, User};
+use user::join_users_to_room;
+use user::{create_desired_users, Synching, User};
+use users_state::load_users;
+use users_state::SavedUserState;
 
 use crate::events::Event;
+use crate::user::Registered;
 
 mod events;
 mod friendship;
@@ -25,10 +30,17 @@ mod metrics;
 mod text;
 mod time;
 mod user;
+mod users_state;
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Configuration {
+    pub user_count: i64,
+    pub users_filename: String,
+    pub create: bool,
+    pub delete: bool,
+    pub run: bool,
+    pub timestamp: Option<u128>,
     homeserver_url: String,
     output_dir: String,
     total_steps: usize,
@@ -53,6 +65,8 @@ pub struct State {
     config: Configuration,
     friendships: Vec<Friendship>,
     users: Vec<User<Synching>>,
+    users_state: SavedUserState,
+    available_users: i64,
 }
 
 #[derive(serde::Serialize, Default, Debug)]
@@ -66,21 +80,37 @@ struct Report {
 
 impl State {
     pub fn new(config: Configuration) -> Self {
+        let server = config.homeserver_url.clone();
+
+        let saved_users = load_users(config.users_filename.clone());
+        let _available_users = saved_users.get_available_users(server);
+
+        let users_state = match _available_users {
+            Some(val) => SavedUserState {
+                available: val.available,
+                friendships: val.friendships.clone(),
+            },
+            None => SavedUserState {
+                available: 0,
+                friendships: vec![],
+            },
+        };
+
         Self {
             config,
             friendships: vec![],
             users: vec![],
+            available_users: users_state.available,
+            users_state,
         }
     }
 
     async fn init_users(&mut self, tx: Sender<Event>) {
-        let timestamp = time_now();
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
         let server = &self.config.homeserver_url;
         let retry_enabled = self.config.retry_request_config;
         let retry_attempts = self.config.user_creation_retry_attempts;
-        let respect_login_well_known = self.config.respect_login_well_known;
 
         let progress_bar = create_progress_bar(
             "Init users".to_string(),
@@ -88,19 +118,29 @@ impl State {
         );
         progress_bar.tick();
 
-        let mut user_creations_buffer = iter((actual_users..desired_users).map(|i| {
-            let id = format!("{i}_{timestamp}");
-            create_user(
-                id,
-                server,
+        let mut futures = vec![];
+        let mut i = actual_users;
+
+        while i < desired_users {
+            let users_index = self.users_state.available - self.available_users;
+
+            let user_id = format!("user_{users_index}");
+            futures.push(sync_user(
+                server.clone(),
+                user_id.clone(),
                 &progress_bar,
                 tx.clone(),
                 retry_attempts,
                 retry_enabled,
-                respect_login_well_known,
-            )
-        }))
-        .buffer_unordered(self.config.user_creation_throughput);
+            ));
+
+            i += 1;
+            self.available_users -= 1;
+        }
+
+        let stream_iter = futures::stream::iter(futures);
+        let mut user_creations_buffer =
+            stream_iter.buffer_unordered(self.config.user_creation_throughput);
 
         while let Some(user) = user_creations_buffer.next().await {
             if let Some(user) = user {
@@ -151,6 +191,7 @@ impl State {
             let mut rng = rand::thread_rng();
             let first_user = self.users.iter().choose(&mut rng).unwrap();
             let second_user = self.users.iter().choose(&mut rng).unwrap();
+
             if first_user.id() == second_user.id() {
                 continue;
             }
@@ -248,6 +289,12 @@ impl State {
     pub async fn run(&mut self) {
         println!("{:#?}\n", self.config);
 
+        let desired_users = self.config.users_per_step * self.config.total_steps;
+
+        if self.available_users < desired_users.try_into().unwrap() {
+            panic!("There are only {} available users to run the test on this server, but for this test {} users are needed, please create more and try again", self.available_users, desired_users);
+        }
+
         let execution_id = time_now();
 
         let (tx, rx) = mpsc::channel::<Event>(100);
@@ -274,6 +321,11 @@ impl State {
                 println!();
             }
         }
+    }
+
+    pub async fn create_users(&mut self) {
+        let (tx, _rx) = mpsc::channel::<Event>(100);
+        create_desired_users(&self.config, tx.clone()).await;
     }
 
     pub fn generate_report(&self, execution_id: u128, step: usize, report: MetricsReport) {
@@ -309,5 +361,35 @@ impl State {
         serde_yaml::to_writer(buffer, &report).expect("Couldn't write report to file");
         println!("Step report generated: {}\n", path);
         println!("{:#?}\n", report);
+    }
+}
+
+fn sync_user(
+    server: String,
+    id: String,
+    progress_bar: &ProgressBar,
+    tx: Sender<Event>,
+    retry_attempts: usize,
+    retry_enabled: bool,
+) -> impl futures::Future<Output = Option<User<Synching>>> {
+    let progress_bar = progress_bar.clone();
+    async move {
+        for _ in 0..retry_attempts {
+            let user = User::<Registered>::new(&id, &server, retry_enabled, tx.clone()).await;
+
+            if let Some(mut user) = user {
+                if let Some(user) = user.login().await {
+                    log::info!("User is now synching: {}", user.id());
+                    progress_bar.inc(1);
+                    return Some(user.sync().await);
+                }
+            }
+        }
+
+        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
+        log::info!("Couldn't init a user");
+
+        progress_bar.inc(1);
+        None
     }
 }
