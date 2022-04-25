@@ -20,8 +20,8 @@ pub struct SavedUsers {
 }
 
 impl SavedUsers {
-    pub fn get_available_users(&self, server: String) -> &SavedUserState {
-        self.users.get(&server.clone()).unwrap()
+    pub fn get_available_users(&self, server: String) -> Option<&SavedUserState> {
+        self.users.get(&server)
     }
 
     pub fn add_user(&mut self, key: String, value: SavedUserState) {
@@ -90,7 +90,7 @@ mod tests {
             },
         );
 
-        let result = save_users(&saved_state, "users_test.json".to_string());
+        save_users(&saved_state, "users_test.json".to_string());
         let res1 = load_users("users_test.json".to_string());
 
         assert_eq!(

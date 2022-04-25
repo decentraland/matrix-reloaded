@@ -1,7 +1,6 @@
 use crate::events::Event;
 use crate::text::create_progress_bar;
 use crate::text::get_random_string;
-use crate::time::time_now;
 use crate::users_state::{load_users, save_users, SavedUserState};
 use crate::Configuration;
 use futures::StreamExt;
@@ -455,7 +454,6 @@ struct UserParams {
     progress_bar: ProgressBar,
     i: i64,
     retry_attempts: usize,
-    timestamp: u128,
     client: Client,
     tx: Sender<Event>,
     respect_login_well_known: bool,
@@ -466,7 +464,7 @@ fn create_user(user_params: UserParams) -> impl futures::Future<Output = Option<
     let progress_bar = user_params.progress_bar.clone();
 
     async move {
-        let id = format!("user_{}_{}", user_params.i, user_params.timestamp);
+        let id = format!("user_{}", user_params.i);
 
         for _ in 0..user_params.retry_attempts {
             let user = User::new_with_client(
@@ -497,7 +495,7 @@ fn create_user(user_params: UserParams) -> impl futures::Future<Output = Option<
 pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     let users_to_create = config.user_count;
 
-    let timestamp = time_now();
+    let mut current_users = load_users(config.users_filename.clone());
 
     let mut users = vec![];
     let progress_bar = create_progress_bar(
@@ -512,13 +510,19 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
         .await
         .unwrap();
 
-    let futures = (0..users_to_create).map(|i| {
+    let _actual_users = current_users.get_available_users(homeserver_url.clone());
+
+    let actual_user_count = match _actual_users {
+        Some(val) => val.available,
+        None => 0,
+    };
+
+    let futures = (actual_user_count..(users_to_create + actual_user_count)).map(|i| {
         create_user(UserParams {
             server: homeserver_url.clone(),
             progress_bar: progress_bar.clone(),
             i,
             retry_attempts: config.user_creation_retry_attempts,
-            timestamp,
             client: client.clone(),
             tx: tx.clone(),
             respect_login_well_known: config.respect_login_well_known,
@@ -536,12 +540,10 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
 
     progress_bar.finish_and_clear();
 
-    let mut current_users = load_users(config.users_filename.clone());
-
     current_users.add_user(
         homeserver_url.clone(),
         SavedUserState {
-            available: config.user_count,
+            available: config.user_count + actual_user_count,
             friendships: vec![],
         },
     );

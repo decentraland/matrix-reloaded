@@ -85,9 +85,15 @@ impl State {
         let saved_users = load_users(config.users_filename.clone());
         let _available_users = saved_users.get_available_users(server);
 
-        let users_state = SavedUserState {
-            available: _available_users.available,
-            friendships: _available_users.friendships.clone(),
+        let users_state = match _available_users {
+            Some(val) => SavedUserState {
+                available: val.available,
+                friendships: val.friendships.clone(),
+            },
+            None => SavedUserState {
+                available: 0,
+                friendships: vec![],
+            },
         };
 
         Self {
@@ -382,6 +388,7 @@ fn sync_user(
 
         //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
         log::info!("Couldn't init a user");
+
         progress_bar.inc(1);
         None
     }
