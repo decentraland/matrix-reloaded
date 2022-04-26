@@ -34,7 +34,7 @@ pub struct MetricsReport {
     requests_average_time: Vec<(UserRequest, u128)>,
     #[serde_as(as = "HashMap<DisplayFromStr, _>")]
     http_errors_per_request: Vec<(String, usize)>,
-    message_delivery_average_time: u128,
+    message_delivery_average_time: Option<u128>,
     messages_sent: usize,
     lost_messages: usize,
 }
@@ -196,7 +196,13 @@ fn calculate_requests_average_time(
         .collect()
 }
 
-fn calculate_message_delivery_average_time(messages: &HashMap<String, MessageTimes>) -> u128 {
+fn calculate_message_delivery_average_time(
+    messages: &HashMap<String, MessageTimes>,
+) -> Option<u128> {
+    if messages.is_empty() {
+        return None;
+    }
+
     let total = messages.iter().fold(0, |total, (_, times)| {
         if let Some(sent) = times.sent {
             if let Some(received) = times.received {
@@ -206,7 +212,7 @@ fn calculate_message_delivery_average_time(messages: &HashMap<String, MessageTim
         total
     });
 
-    total / (messages.len() as u128)
+    Some(total / (messages.len() as u128))
 }
 
 fn calculate_lost_messages(messages: &HashMap<String, MessageTimes>) -> usize {

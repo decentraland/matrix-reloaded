@@ -326,17 +326,19 @@ impl State {
     pub async fn create_users(&mut self) {
         let (tx, rx) = mpsc::channel::<Event>(100);
         let metrics = Metrics::new(rx);
-        let _handle = metrics.run();
+        let handle = metrics.run();
+
         create_desired_users(&self.config, tx.clone()).await;
-        // let report = handle.await.expect("read events loop should end correctly");
-        // log::error!(
-        //     "Create users command finished {} errors",
-        //     if report.any_error() {
-        //         "with"
-        //     } else {
-        //         "without"
-        //     }
-        // )
+
+        let report = handle.await.expect("read events loop should end correctly");
+        println!(
+            "Create users command finished {} errors",
+            if report.any_error() {
+                "with"
+            } else {
+                "without"
+            }
+        )
     }
 
     pub fn generate_report(&self, execution_id: u128, step: usize, report: MetricsReport) {

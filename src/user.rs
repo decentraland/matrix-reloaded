@@ -562,6 +562,8 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     );
 
     save_users(&servers_to_current_users, config.users_filename.clone());
+
+    tx.send(Event::Finish).await.expect("Finish event sent");
 }
 
 #[cfg(test)]
