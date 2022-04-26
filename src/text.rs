@@ -13,8 +13,10 @@ pub fn create_progress_bar(text: impl Into<Cow<'static, str>>, size: u64) -> Pro
     let progress_style = ProgressStyle::default_bar()
         .template("{prefix:>12.cyan.bold}: [{bar:57}] {pos}/{len}")
         .progress_chars("=> ");
+
     let progress_bar = ProgressBar::new(size);
     progress_bar.set_style(progress_style);
     progress_bar.set_prefix(text);
+
     progress_bar
 }

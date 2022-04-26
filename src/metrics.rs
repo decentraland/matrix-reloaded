@@ -66,6 +66,10 @@ impl MetricsReport {
             lost_messages,
         }
     }
+
+    pub fn any_error(&self) -> bool {
+        self.http_errors_per_request.iter().any(|&(_, n)| n > 0)
+    }
 }
 
 impl Metrics {
