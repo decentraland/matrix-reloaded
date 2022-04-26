@@ -502,7 +502,7 @@ fn create_user(user_params: UserParams) -> impl futures::Future<Output = Option<
 pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     let users_to_create = config.user_count;
 
-    let mut current_users = load_users(config.users_filename.clone());
+    let mut servers_to_current_users = load_users(config.users_filename.clone());
 
     let mut users = vec![];
     let progress_bar = create_progress_bar(
@@ -517,11 +517,19 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
         .await
         .unwrap();
 
-    let _actual_users = current_users.get_available_users(homeserver_url.clone());
+    let current_users = servers_to_current_users.get_available_users(&homeserver_url);
 
-    let actual_user_count = _actual_users.map(|users| users.available).unwrap_or(0);
+    let current_user_count = current_users.map(|users| users.available).unwrap_or(0);
 
-    let futures = (actual_user_count..(users_to_create + actual_user_count)).map(|i| {
+    progress_bar.println(format!(
+        "{} users currently available for server '{}', creating new {} for a total of {}",
+        current_user_count,
+        config.homeserver_url,
+        users_to_create,
+        current_user_count + users_to_create
+    ));
+
+    let futures = (current_user_count..(users_to_create + current_user_count)).map(|i| {
         create_user(UserParams {
             server: homeserver_url.clone(),
             progress_bar: progress_bar.clone(),
@@ -545,15 +553,17 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
 
     progress_bar.finish_and_clear();
 
-    current_users.add_user(
+    servers_to_current_users.add_user(
         homeserver_url.clone(),
         SavedUserState {
-            available: config.user_count + actual_user_count,
+            available: config.user_count + current_user_count,
             friendships: vec![],
         },
     );
 
-    save_users(&current_users, config.users_filename.clone());
+    save_users(&servers_to_current_users, config.users_filename.clone());
+
+    tx.send(Event::Finish).await.expect("Finish event sent");
 }
 
 #[cfg(test)]

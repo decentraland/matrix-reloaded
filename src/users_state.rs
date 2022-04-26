@@ -20,8 +20,8 @@ pub struct SavedUsers {
 }
 
 impl SavedUsers {
-    pub fn get_available_users(&self, server: String) -> Option<&SavedUserState> {
-        self.users.get(&server)
+    pub fn get_available_users(&self, server: &str) -> Option<&SavedUserState> {
+        self.users.get(server)
     }
 
     pub fn add_user(&mut self, key: String, value: SavedUserState) {
@@ -49,11 +49,9 @@ pub fn load_users(file: String) -> SavedUsers {
         };
     }
 
-    let file_content = std::fs::read_to_string(file).unwrap();
+    let file_content = std::fs::read_to_string(file).expect("cannot read file '{file}'");
 
-    let res: SavedUsers = serde_json::from_str(&file_content).unwrap();
-
-    res
+    serde_json::from_str::<SavedUsers>(&file_content).expect("cannot parse file content '{file}'")
 }
 
 #[cfg(test)]

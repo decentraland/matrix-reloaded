@@ -83,7 +83,7 @@ impl State {
         let server = config.homeserver_url.clone();
 
         let saved_users = load_users(config.users_filename.clone());
-        let _available_users = saved_users.get_available_users(server);
+        let _available_users = saved_users.get_available_users(&server);
 
         let users_state = match _available_users {
             Some(val) => SavedUserState {
@@ -324,8 +324,21 @@ impl State {
     }
 
     pub async fn create_users(&mut self) {
-        let (tx, _rx) = mpsc::channel::<Event>(100);
+        let (tx, rx) = mpsc::channel::<Event>(100);
+        let metrics = Metrics::new(rx);
+        let handle = metrics.run();
+
         create_desired_users(&self.config, tx.clone()).await;
+
+        let report = handle.await.expect("read events loop should end correctly");
+        println!(
+            "Create users command finished {} errors",
+            if report.any_error() {
+                "with"
+            } else {
+                "without"
+            }
+        )
     }
 
     pub fn generate_report(&self, execution_id: u128, step: usize, report: MetricsReport) {
