@@ -40,7 +40,6 @@ pub struct Configuration {
     pub create: bool,
     pub delete: bool,
     pub run: bool,
-    pub timestamp: Option<u128>,
     homeserver_url: String,
     output_dir: String,
     total_steps: usize,
@@ -82,18 +81,13 @@ impl State {
     pub fn new(config: Configuration) -> Self {
         let server = config.homeserver_url.clone();
 
-        let saved_users = load_users(config.users_filename.clone());
-        let _available_users = saved_users.get_available_users(&server);
+        let mut saved_users = load_users(config.users_filename.clone());
+        let available_users = saved_users.get_available_users(&server);
 
-        let users_state = match _available_users {
-            Some(val) => SavedUserState {
-                available: val.available,
-                friendships: val.friendships.clone(),
-            },
-            None => SavedUserState {
-                available: 0,
-                friendships: vec![],
-            },
+        let users_state = SavedUserState {
+            available: available_users.available,
+            friendships: available_users.friendships.clone(),
+            friendships_by_user: available_users.friendships_by_user.clone(),
         };
 
         Self {
@@ -169,6 +163,8 @@ impl State {
         progress_bar.tick();
 
         let mut futures = vec![];
+
+        // let mut friendships: Vec<(usize, usize)> = vec![];
 
         while self.friendships.len() < amount_of_friendships {
             let (first_user, second_user) = self.get_random_friendship();

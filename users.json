@@ -1,11 +1,11 @@
 {
   "users": {
-    "synapse.decentraland.io": {
-      "available": 3015,
+    "matrix.decentraland.zone": {
+      "available": 3300,
       "friendships": []
     },
-    "matrix.decentraland.zone": {
-      "available": 3200,
+    "synapse.decentraland.io": {
+      "available": 3015,
       "friendships": []
     }
   }

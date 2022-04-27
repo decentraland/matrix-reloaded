@@ -55,6 +55,7 @@ pub struct User<State> {
     client: Arc<Mutex<Client>>,
     tx: Sender<Event>,
     state: State,
+    friendships: Vec<(usize, usize)>,
 }
 
 impl<State> User<State> {
@@ -105,6 +106,7 @@ impl User<Disconnected> {
                 retry_enabled,
                 respect_login_well_known,
             },
+            friendships: vec![],
         })
     }
 
@@ -129,6 +131,7 @@ impl User<Disconnected> {
                 retry_enabled,
                 respect_login_well_known,
             },
+            friendships: vec![],
         })
     }
 
@@ -155,6 +158,7 @@ impl User<Disconnected> {
                     client: self.client.clone(),
                     tx: self.tx.clone(),
                     state: Registered {},
+                    friendships: vec![],
                 })
             }
             Err(e) => {
@@ -176,6 +180,7 @@ impl User<Disconnected> {
                             client: user.client,
                             tx: user.tx,
                             state: Registered {},
+                            friendships: vec![],
                         });
                     }
                 } else {
@@ -206,6 +211,7 @@ impl User<Registered> {
             client: Arc::new(tokio::sync::Mutex::new(client.unwrap())),
             tx,
             state: Registered {},
+            friendships: vec![],
         })
     }
 
@@ -226,11 +232,34 @@ impl User<Registered> {
                     instant.elapsed(),
                 )))
                 .await;
+
+                let joined_rooms = client.joined_rooms();
+                let friendships = vec![];
+                println!("Login {}", self.id());
+
+                println!("rooms {}", joined_rooms.len());
+                for room in joined_rooms {
+                    println!("room {}", room.room_id());
+                    let users = match room.joined_members().await {
+                        Ok(res) => res,
+                        Err(e) => {
+                            println!("error {}", e);
+                            vec![]
+                        }
+                    };
+
+                    for user2 in users {
+                        println!("user id {}", user2.user_id());
+                        // friendships.push(user.user_id());
+                        // friendships.push(user.user_id());
+                    }
+                }
                 Some(User {
                     id: self.id.clone(),
                     client: self.client.clone(),
                     tx: self.tx.clone(),
                     state: LoggedIn {},
+                    friendships,
                 })
             }
             Err(e) => {
@@ -276,6 +305,7 @@ impl User<LoggedIn> {
             state: Synching {
                 rooms: Arc::new(Mutex::new(vec![])),
             },
+            friendships: self.friendships.clone(),
         }
     }
 }
@@ -297,6 +327,7 @@ impl User<Synching> {
                 Some(response.room_id.clone())
             }
             Err(e) => {
+                println!("Fallo por {}", e.to_string());
                 self.send(Event::Error((UserRequest::CreateRoom, e))).await;
                 None
             }
@@ -519,7 +550,7 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
 
     let current_users = servers_to_current_users.get_available_users(&homeserver_url);
 
-    let current_user_count = current_users.map(|users| users.available).unwrap_or(0);
+    let current_user_count = current_users.available;
 
     progress_bar.println(format!(
         "{} users currently available for server '{}', creating new {} for a total of {}",
@@ -558,6 +589,7 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
         SavedUserState {
             available: config.user_count + current_user_count,
             friendships: vec![],
+            ..Default::default()
         },
     );
 
