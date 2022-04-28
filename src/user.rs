@@ -233,27 +233,8 @@ impl User<Registered> {
                 )))
                 .await;
 
-                let joined_rooms = client.joined_rooms();
                 let friendships = vec![];
-                println!("Login {}", self.id());
 
-                println!("rooms {}", joined_rooms.len());
-                for room in joined_rooms {
-                    println!("room {}", room.room_id());
-                    let users = match room.joined_members().await {
-                        Ok(res) => res,
-                        Err(e) => {
-                            println!("error {}", e);
-                            vec![]
-                        }
-                    };
-
-                    for user2 in users {
-                        println!("user id {}", user2.user_id());
-                        // friendships.push(user.user_id());
-                        // friendships.push(user.user_id());
-                    }
-                }
                 Some(User {
                     id: self.id.clone(),
                     client: self.client.clone(),

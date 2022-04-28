@@ -175,13 +175,27 @@ impl State {
 
         let mut futures = vec![];
 
-        let used = 0;
+        let mut used = 0;
 
         while self.friendships.len() < amount_of_friendships {
-            let (first_user, second_user) =
-                self.get_random_friendship(&available_friendships, used);
+            let first_user;
+            let second_user;
 
-            futures.push(join_users_to_room(first_user, second_user, &progress_bar));
+            if used < available_friendships.len() {
+                let (user1, user2) = available_friendships[used];
+
+                first_user = &self.users[user1];
+                second_user = &self.users[user2];
+                used += 1;
+                progress_bar.inc(1);
+            } else {
+                (first_user, second_user) = self.get_random_friendship();
+                futures.push(join_users_to_room(first_user, second_user, &progress_bar));
+            }
+
+            let friendship = Friendship::from_users(first_user, second_user);
+
+            self.friendships.push(friendship);
         }
 
         let stream_iter = iter(futures);
@@ -212,23 +226,11 @@ impl State {
         save_users(&saved_users, self.config.users_filename.clone());
     }
 
-    fn get_random_friendship(
-        &mut self,
-        available_friendships: &[(usize, usize)],
-        mut used: usize,
-    ) -> (&User<Synching>, &User<Synching>) {
+    fn get_random_friendship(&self) -> (&User<Synching>, &User<Synching>) {
         loop {
             let mut rng = rand::thread_rng();
-            let mut first_user = self.users.iter().choose(&mut rng).unwrap();
-            let mut second_user = self.users.iter().choose(&mut rng).unwrap();
-
-            if used < available_friendships.len() {
-                let (user1, user2) = available_friendships[used];
-
-                first_user = &self.users[user1];
-                second_user = &self.users[user2];
-                used += 1;
-            }
+            let first_user = self.users.iter().choose(&mut rng).unwrap();
+            let second_user = self.users.iter().choose(&mut rng).unwrap();
 
             if first_user.id() == second_user.id() {
                 continue;
@@ -237,7 +239,6 @@ impl State {
             if self.friendships.contains(&friendship) {
                 continue;
             }
-            self.friendships.push(friendship);
 
             break (first_user, second_user);
         }

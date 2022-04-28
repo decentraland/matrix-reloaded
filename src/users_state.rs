@@ -1,4 +1,3 @@
-use std::borrow::{Borrow, BorrowMut};
 use std::path::Path;
 use std::{collections::HashMap, fs::File, io::Write};
 
@@ -30,6 +29,17 @@ impl SavedUserState {
     }
 
     pub fn add_friendship(&mut self, user1: usize, user2: usize) {
+        println!("Adding {} {}", user1, user2);
+
+        if self.friendships.contains(&(user1, user2)) || self.friendships.contains(&(user2, user1))
+        {
+            println!("Is already present ");
+
+            return;
+        }
+
+        println!("Is new ");
+
         self.friendships.push((user1, user2));
     }
 }
