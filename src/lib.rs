@@ -155,6 +155,16 @@ impl State {
     async fn init_friendships(&mut self) {
         let amount_of_friendships = self.calculate_step_friendships();
 
+        let available_friendships = self
+            .users_state
+            .friendships
+            .clone()
+            .into_iter()
+            .filter(|(user1, user2)| user1 < &self.users.len() && user2 < &self.users.len())
+            .collect::<Vec<(usize, usize)>>();
+
+        println!("Available friendships {}", available_friendships.len());
+
         let progress_bar = create_progress_bar(
             "Init friendships".to_string(),
             (amount_of_friendships - self.friendships.len())
@@ -165,8 +175,11 @@ impl State {
 
         let mut futures = vec![];
 
+        let used = 0;
+
         while self.friendships.len() < amount_of_friendships {
-            let (first_user, second_user) = self.get_random_friendship();
+            let (first_user, second_user) =
+                self.get_random_friendship(&available_friendships, used);
 
             futures.push(join_users_to_room(first_user, second_user, &progress_bar));
         }
@@ -199,11 +212,23 @@ impl State {
         save_users(&saved_users, self.config.users_filename.clone());
     }
 
-    fn get_random_friendship(&mut self) -> (&User<Synching>, &User<Synching>) {
+    fn get_random_friendship(
+        &mut self,
+        available_friendships: &[(usize, usize)],
+        mut used: usize,
+    ) -> (&User<Synching>, &User<Synching>) {
         loop {
             let mut rng = rand::thread_rng();
-            let first_user = self.users.iter().choose(&mut rng).unwrap();
-            let second_user = self.users.iter().choose(&mut rng).unwrap();
+            let mut first_user = self.users.iter().choose(&mut rng).unwrap();
+            let mut second_user = self.users.iter().choose(&mut rng).unwrap();
+
+            if used < available_friendships.len() {
+                let (user1, user2) = available_friendships[used];
+
+                first_user = &self.users[user1];
+                second_user = &self.users[user2];
+                used += 1;
+            }
 
             if first_user.id() == second_user.id() {
                 continue;
