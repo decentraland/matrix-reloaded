@@ -308,7 +308,7 @@ impl User<Synching> {
                 Some(response.room_id.clone())
             }
             Err(e) => {
-                println!("Fallo por {}", e.to_string());
+                println!("Failing to sync {}", e);
                 self.send(Event::Error((UserRequest::CreateRoom, e))).await;
                 None
             }
