@@ -85,11 +85,7 @@ impl State {
         let mut saved_users = load_users(config.users_filename.clone());
         let available_users = saved_users.get_available_users(&server);
 
-        let users_state = SavedUserState {
-            available: available_users.available,
-            friendships: available_users.friendships.clone(),
-            friendships_by_user: available_users.friendships_by_user.clone(),
-        };
+        let users_state = available_users.clone();
 
         Self {
             config,
