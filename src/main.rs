@@ -92,6 +92,6 @@ async fn create_users(config: Configuration) {
     state.create_users().await
 }
 
-async fn delete_users(config: Configuration) {
+async fn delete_users(_config: Configuration) {
     //TODO! Implement delete
 }
