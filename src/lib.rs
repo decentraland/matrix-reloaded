@@ -8,6 +8,7 @@ use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DurationSeconds;
+use users_state::save_users;
 
 use std::fs::{create_dir_all, File};
 use std::thread::sleep;
@@ -164,8 +165,6 @@ impl State {
 
         let mut futures = vec![];
 
-        // let mut friendships: Vec<(usize, usize)> = vec![];
-
         while self.friendships.len() < amount_of_friendships {
             let (first_user, second_user) = self.get_random_friendship();
 
@@ -175,11 +174,29 @@ impl State {
         let stream_iter = iter(futures);
         let mut buffered_iter = stream_iter.buffer_unordered(self.config.room_creation_throughput);
 
-        while (buffered_iter.next().await).is_some() {}
+        while let Some(res) = buffered_iter.next().await {
+            if let Some((user1, user2)) = res {
+                self.users_state.add_friendship(user1, user2)
+            }
+        }
 
         self.friendships.sort();
 
+        self.store_new_users_state();
+
         progress_bar.finish_and_clear();
+    }
+
+    fn store_new_users_state(&mut self) {
+        let mut saved_users = load_users(self.config.users_filename.clone());
+        let users_state = saved_users
+            .users
+            .entry(self.config.homeserver_url.clone())
+            .or_default();
+        users_state.available = self.users_state.available;
+        users_state.friendships = self.users_state.friendships.clone();
+        users_state.friendships_by_user = self.users_state.friendships_by_user.clone();
+        save_users(&saved_users, self.config.users_filename.clone());
     }
 
     fn get_random_friendship(&mut self) -> (&User<Synching>, &User<Synching>) {

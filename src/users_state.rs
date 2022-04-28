@@ -28,6 +28,10 @@ impl SavedUserState {
             user2_friends.push(user1);
         }
     }
+
+    pub fn add_friendship(&mut self, user1: usize, user2: usize) {
+        self.friendships.push((user1, user2));
+    }
 }
 
 #[serde_as]
@@ -48,12 +52,6 @@ impl SavedUsers {
 
     pub fn add_user(&mut self, key: String, value: SavedUserState) {
         self.users.insert(key, value);
-    }
-
-    pub fn add_friendship(&mut self, homeserver: &str, user1: usize, user2: usize) {
-        let users = self.users.entry(homeserver.to_string()).or_default();
-
-        users.friendships.push((user1, user2))
     }
 }
 

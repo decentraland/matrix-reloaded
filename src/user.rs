@@ -396,21 +396,40 @@ pub fn join_users_to_room(
     first_user: &User<Synching>,
     second_user: &User<Synching>,
     progress_bar: &ProgressBar,
-) -> impl futures::Future<Output = ()> {
+) -> impl futures::Future<Output = Option<(usize, usize)>> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
     let progress_bar = progress_bar.clone();
 
     async move {
+        let mut res: Option<(usize, usize)> = None;
+
         let room_created = first_user.create_room().await;
         if let Some(room_id) = room_created {
             first_user.join_room(&room_id).await;
             second_user.join_room(&room_id).await;
+
+            res = Some((
+                get_user_index_from_id(first_user.id.localpart().to_string()),
+                get_user_index_from_id(second_user.id.localpart().to_string()),
+            ));
         } else {
             //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
             log::info!("User {} couldn't create a room", first_user.id());
         }
         progress_bar.inc(1);
+
+        res
+    }
+}
+
+fn get_user_index_from_id(user_id: String) -> usize {
+    // The prefix "user_" has 5 chars that's why we start on position 5
+    let starting_index = 5;
+
+    match user_id[starting_index..].parse::<usize>() {
+        Ok(res) => res,
+        Err(err) => panic!("Received an invalid string {}", err),
     }
 }
 
