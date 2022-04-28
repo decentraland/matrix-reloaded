@@ -52,7 +52,7 @@ pub struct Configuration {
     #[serde_as(as = "DurationSeconds<u64>")]
     #[serde(rename = "tick_duration_in_secs")]
     tick_duration: Duration,
-    max_users_to_act_per_tick: usize,
+    max_users_to_act_per_tick_ratio: f64,
     waiting_period: usize,
     retry_request_config: bool,
     respect_login_well_known: bool,
@@ -208,7 +208,9 @@ impl State {
     async fn act(&mut self, tx: Sender<Event>) {
         let start = Instant::now();
 
-        let users_to_act = std::cmp::min(self.users.len(), self.config.max_users_to_act_per_tick);
+        let users_to_act =
+            ((self.users.len() as f64) * self.config.max_users_to_act_per_tick_ratio) as usize;
+        let users_to_act = std::cmp::min(self.users.len(), users_to_act);
         let progress_bar = create_progress_bar(
             "Running",
             (self.config.step_duration.as_secs_f64() / self.config.tick_duration.as_secs_f64())

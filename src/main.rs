@@ -29,10 +29,6 @@ struct Args {
     #[clap(short, long, default_value = "users.json")]
     users_filename: String,
 
-    /// The timestamp at which the users that want to be deleted were created
-    #[clap(short, long, requires = "user-abm")]
-    timestamp: Option<u128>,
-
     /// The amount of users that will be created or deleted
     #[clap(
         short,
@@ -56,7 +52,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set_override("create", args.create)?
         .set_override("delete", args.delete)?
         .set_override("run", args.run)?
-        .set_override_option("timestamp", args.timestamp)?
         .set_override("user_count", args.amount)?
         .set_override_option("users_filename", Some(args.users_filename))?
         .build()?;
@@ -93,13 +88,6 @@ async fn create_users(config: Configuration) {
     state.create_users().await
 }
 
-async fn delete_users(config: Configuration) {
-    match config.timestamp {
-        Some(_) => {
-            //TODO! Implement delete
-        }
-        None => {
-            panic!("The timestamp of the users to be deleted must be present")
-        }
-    }
+async fn delete_users(_config: Configuration) {
+    todo!("implement this feature!")
 }
