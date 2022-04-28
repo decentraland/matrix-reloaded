@@ -1,5 +1,4 @@
-# Matrix Load Testing Tool
-
+# Matrix Reloaded
 ## Setup
 
 Before running the commands below remember to install the linker used by your OS:
