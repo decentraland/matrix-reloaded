@@ -56,7 +56,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set_override("create", args.create)?
         .set_override("delete", args.delete)?
         .set_override("run", args.run)?
-        .set_override_option("timestamp", args.timestamp)?
         .set_override("user_count", args.amount)?
         .set_override_option("users_filename", Some(args.users_filename))?
         .build()?;
@@ -93,13 +92,6 @@ async fn create_users(config: Configuration) {
     state.create_users().await
 }
 
-async fn delete_users(config: Configuration) {
-    match config.timestamp {
-        Some(_) => {
-            //TODO! Implement delete
-        }
-        None => {
-            panic!("The timestamp of the users to be deleted must be present")
-        }
-    }
+async fn delete_users(_config: Configuration) {
+    //TODO! Implement delete
 }
