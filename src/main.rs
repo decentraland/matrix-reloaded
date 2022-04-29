@@ -89,5 +89,5 @@ async fn create_users(config: Configuration) {
 }
 
 async fn delete_users(_config: Configuration) {
-    todo!("implement this feature!")
+    //TODO! Implement delete
 }

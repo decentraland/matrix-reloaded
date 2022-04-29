@@ -8,6 +8,7 @@ use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DurationSeconds;
+use users_state::save_users;
 
 use std::fs::{create_dir_all, File};
 use std::thread::sleep;
@@ -40,7 +41,6 @@ pub struct Configuration {
     pub create: bool,
     pub delete: bool,
     pub run: bool,
-    pub timestamp: Option<u128>,
     homeserver_url: String,
     output_dir: String,
     total_steps: usize,
@@ -82,19 +82,10 @@ impl State {
     pub fn new(config: Configuration) -> Self {
         let server = config.homeserver_url.clone();
 
-        let saved_users = load_users(config.users_filename.clone());
-        let _available_users = saved_users.get_available_users(&server);
+        let mut saved_users = load_users(config.users_filename.clone());
+        let available_users = saved_users.get_available_users(&server);
 
-        let users_state = match _available_users {
-            Some(val) => SavedUserState {
-                available: val.available,
-                friendships: val.friendships.clone(),
-            },
-            None => SavedUserState {
-                available: 0,
-                friendships: vec![],
-            },
-        };
+        let users_state = available_users.clone();
 
         Self {
             config,
@@ -160,6 +151,15 @@ impl State {
     async fn init_friendships(&mut self) {
         let amount_of_friendships = self.calculate_step_friendships();
 
+        let available_friendships = self
+            .users_state
+            .friendships
+            .iter()
+            .filter(|(user1, user2)| user1 < &self.users.len() && user2 < &self.users.len())
+            .collect::<Vec<_>>();
+
+        println!("Available friendships {}", available_friendships.len());
+
         let progress_bar = create_progress_bar(
             "Init friendships".to_string(),
             (amount_of_friendships - self.friendships.len())
@@ -170,23 +170,62 @@ impl State {
 
         let mut futures = vec![];
 
-        while self.friendships.len() < amount_of_friendships {
-            let (first_user, second_user) = self.get_random_friendship();
+        let mut used = 0;
 
-            futures.push(join_users_to_room(first_user, second_user, &progress_bar));
+        // Here the code obtains the friendships to be used during the test.
+        // It first tries to reuse the previously created friendships, if there aren't more available
+        // it creates new ones.
+        // It's important to note that only creating new ones is async, otherwise it's just populating the friendships array
+        while self.friendships.len() < amount_of_friendships {
+            let first_user;
+            let second_user;
+
+            if used < available_friendships.len() {
+                let &(user1, user2) = available_friendships[used];
+
+                first_user = &self.users[user1];
+                second_user = &self.users[user2];
+                used += 1;
+                progress_bar.inc(1);
+            } else {
+                (first_user, second_user) = self.get_random_friendship();
+                futures.push(join_users_to_room(first_user, second_user, &progress_bar));
+            }
+
+            let friendship = Friendship::from_users(first_user, second_user);
+
+            self.friendships.push(friendship);
         }
 
         let stream_iter = iter(futures);
         let mut buffered_iter = stream_iter.buffer_unordered(self.config.room_creation_throughput);
 
-        while (buffered_iter.next().await).is_some() {}
+        while let Some(res) = buffered_iter.next().await {
+            if let Some((user1, user2)) = res {
+                self.users_state.add_friendship(user1, user2)
+            }
+        }
 
         self.friendships.sort();
+
+        self.store_new_users_state();
 
         progress_bar.finish_and_clear();
     }
 
-    fn get_random_friendship(&mut self) -> (&User<Synching>, &User<Synching>) {
+    fn store_new_users_state(&mut self) {
+        let mut saved_users = load_users(self.config.users_filename.clone());
+        let users_state = saved_users
+            .users
+            .entry(self.config.homeserver_url.clone())
+            .or_default();
+        users_state.available = self.users_state.available;
+        users_state.friendships = self.users_state.friendships.clone();
+        users_state.friendships_by_user = self.users_state.friendships_by_user.clone();
+        save_users(&saved_users, self.config.users_filename.clone());
+    }
+
+    fn get_random_friendship(&self) -> (&User<Synching>, &User<Synching>) {
         loop {
             let mut rng = rand::thread_rng();
             let first_user = self.users.iter().choose(&mut rng).unwrap();
@@ -199,7 +238,6 @@ impl State {
             if self.friendships.contains(&friendship) {
                 continue;
             }
-            self.friendships.push(friendship);
 
             break (first_user, second_user);
         }

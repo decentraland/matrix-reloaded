@@ -6,22 +6,54 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DisplayFromStr;
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
 pub struct SavedUserState {
     pub available: i64,
     pub friendships: Vec<(usize, usize)>,
+
+    #[serde(skip)]
+    pub friendships_by_user: HashMap<usize, Vec<usize>>,
+}
+
+impl SavedUserState {
+    pub fn init_friendships(&mut self) {
+        self.friendships_by_user = HashMap::new();
+
+        for &(user1, user2) in &self.friendships {
+            let user1_friends = self.friendships_by_user.entry(user1).or_insert(vec![]);
+            user1_friends.push(user2);
+
+            let user2_friends = self.friendships_by_user.entry(user2).or_insert(vec![]);
+            user2_friends.push(user1);
+        }
+    }
+
+    pub fn add_friendship(&mut self, user1: usize, user2: usize) {
+        // This clause makes sure that a friendship is created only once, since they are bidirectional relations.
+        // Once a friendship is established, both users have joined the same room, so it would make no sense in having the other direction
+        if self.friendships.contains(&(user1, user2)) || self.friendships.contains(&(user2, user1))
+        {
+            return;
+        }
+
+        self.friendships.push((user1, user2));
+    }
 }
 
 #[serde_as]
-#[derive(Deserialize, Serialize, PartialEq, Debug)]
+#[derive(Deserialize, Serialize, PartialEq, Debug, Default)]
 pub struct SavedUsers {
     #[serde_as(as = "HashMap<DisplayFromStr, _>")]
     pub users: HashMap<String, SavedUserState>,
 }
 
 impl SavedUsers {
-    pub fn get_available_users(&self, server: &str) -> Option<&SavedUserState> {
-        self.users.get(server)
+    pub fn get_available_users(&mut self, server: &str) -> &SavedUserState {
+        let res = self.users.entry(server.to_string()).or_default();
+
+        res.init_friendships();
+
+        res
     }
 
     pub fn add_user(&mut self, key: String, value: SavedUserState) {
@@ -70,7 +102,7 @@ mod tests {
             "Asd".to_string(),
             SavedUserState {
                 available: 10,
-                friendships: vec![],
+                ..Default::default()
             },
         );
         saved_state.users.insert(
@@ -78,13 +110,14 @@ mod tests {
             SavedUserState {
                 available: 10,
                 friendships: vec![],
+                friendships_by_user: HashMap::new(),
             },
         );
         saved_state.users.insert(
             "Csd".to_string(),
             SavedUserState {
                 available: 10,
-                friendships: vec![],
+                ..Default::default()
             },
         );
 
