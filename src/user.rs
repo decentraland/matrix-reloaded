@@ -158,7 +158,7 @@ impl User<Disconnected> {
                     client: self.client.clone(),
                     tx: self.tx.clone(),
                     state: Registered {},
-                    friendships: vec![],
+                    friendships: self.friendships.clone(),
                 })
             }
             Err(e) => {
@@ -180,7 +180,7 @@ impl User<Disconnected> {
                             client: user.client,
                             tx: user.tx,
                             state: Registered {},
-                            friendships: vec![],
+                            friendships: user.friendships,
                         });
                     }
                 } else {
@@ -233,14 +233,12 @@ impl User<Registered> {
                 )))
                 .await;
 
-                let friendships = vec![];
-
                 Some(User {
                     id: self.id.clone(),
                     client: self.client.clone(),
                     tx: self.tx.clone(),
                     state: LoggedIn {},
-                    friendships,
+                    friendships: self.friendships.clone(),
                 })
             }
             Err(e) => {
@@ -308,7 +306,7 @@ impl User<Synching> {
                 Some(response.room_id.clone())
             }
             Err(e) => {
-                println!("Failing to sync {}", e);
+                println!("Failed to create room {}", e);
                 self.send(Event::Error((UserRequest::CreateRoom, e))).await;
                 None
             }

@@ -172,6 +172,10 @@ impl State {
 
         let mut used = 0;
 
+        // Here the code obtains the friendships to be used during the test.
+        // It first tries to reuse the previously created friendships, if there aren't more available
+        // it creates new ones.
+        // It's important to note that only creating new ones is async, otherwise it's just populating the friendships array
         while self.friendships.len() < amount_of_friendships {
             let first_user;
             let second_user;
