@@ -1,4 +1,4 @@
-# Matrix Load Testing Tool
+# Matrix Reloaded
 
 ## Setup
 
