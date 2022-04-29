@@ -29,6 +29,8 @@ impl SavedUserState {
     }
 
     pub fn add_friendship(&mut self, user1: usize, user2: usize) {
+        // This clause makes sure that a friendship is created only once, since they are bidirectional relations.
+        // Once a friendship is established, both users have joined the same room, so it would make no sense in having the other direction
         if self.friendships.contains(&(user1, user2)) || self.friendships.contains(&(user2, user1))
         {
             return;
@@ -100,8 +102,7 @@ mod tests {
             "Asd".to_string(),
             SavedUserState {
                 available: 10,
-                friendships: vec![],
-                friendships_by_user: HashMap::new(),
+                ..Default::default()
             },
         );
         saved_state.users.insert(
@@ -116,8 +117,7 @@ mod tests {
             "Csd".to_string(),
             SavedUserState {
                 available: 10,
-                friendships: vec![],
-                friendships_by_user: HashMap::new(),
+                ..Default::default()
             },
         );
 
