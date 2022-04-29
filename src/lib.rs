@@ -154,10 +154,9 @@ impl State {
         let available_friendships = self
             .users_state
             .friendships
-            .clone()
-            .into_iter()
+            .iter()
             .filter(|(user1, user2)| user1 < &self.users.len() && user2 < &self.users.len())
-            .collect::<Vec<(usize, usize)>>();
+            .collect::<Vec<_>>();
 
         println!("Available friendships {}", available_friendships.len());
 
@@ -178,7 +177,7 @@ impl State {
             let second_user;
 
             if used < available_friendships.len() {
-                let (user1, user2) = available_friendships[used];
+                let &(user1, user2) = available_friendships[used];
 
                 first_user = &self.users[user1];
                 second_user = &self.users[user2];
