@@ -61,12 +61,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(config) => {
             match config {
                 Configuration { create: true, .. } => create_users(config).await,
-                Configuration { delete: true, .. } => {
-                    delete_users(config).await;
-                }
-                Configuration { run: true, .. } => {
-                    run_state(config).await;
-                }
+                Configuration { delete: true, .. } => delete_users(config).await,
+                Configuration { run: true, .. } => run_state(config).await,
                 _ => println!("One of create delete or run modes must be selected"),
             };
         }
