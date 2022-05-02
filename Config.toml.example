@@ -9,7 +9,7 @@ step_duration_in_secs = 30
 # Tick duration where users interact each other
 tick_duration_in_secs = 5
 # Max users to act per tick during a step
-max_users_to_act_per_tick = 100
+max_users_to_act_per_tick_ratio = 0.2
 # Time to wait for all messages to be delivered, after that time they are considered as lost
 waiting_period = 30
 # Enable retry request configuration

@@ -29,10 +29,6 @@ struct Args {
     #[clap(short, long, default_value = "users.json")]
     users_filename: String,
 
-    /// The timestamp at which the users that want to be deleted were created
-    #[clap(short, long, requires = "user-abm")]
-    timestamp: Option<u128>,
-
     /// The amount of users that will be created or deleted
     #[clap(
         short,
@@ -65,12 +61,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(config) => {
             match config {
                 Configuration { create: true, .. } => create_users(config).await,
-                Configuration { delete: true, .. } => {
-                    delete_users(config).await;
-                }
-                Configuration { run: true, .. } => {
-                    run_state(config).await;
-                }
+                Configuration { delete: true, .. } => delete_users(config).await,
+                Configuration { run: true, .. } => run_state(config).await,
                 _ => println!("One of create delete or run modes must be selected"),
             };
         }
