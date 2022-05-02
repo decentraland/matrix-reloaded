@@ -155,7 +155,7 @@ impl State {
             .users_state
             .friendships
             .iter()
-            .filter(|(user1, user2)| user1 < &self.users.len() && user2 < &self.users.len())
+            .filter(|(user1, user2, _)| user1 < &self.users.len() && user2 < &self.users.len())
             .collect::<Vec<_>>();
 
         println!("Available friendships {}", available_friendships.len());
@@ -177,22 +177,34 @@ impl State {
         // it creates new ones.
         // It's important to note that only creating new ones is async, otherwise it's just populating the friendships array
         while self.friendships.len() < amount_of_friendships {
-            let first_user;
-            let second_user;
+            let friendship = if used < available_friendships.len() {
+                let &(user1, user2, _room_id) = &available_friendships[used];
 
-            if used < available_friendships.len() {
-                let &(user1, user2) = available_friendships[used];
+                let first_user = self.users.get_mut(*user1).unwrap();
+                first_user.add_friendship(_room_id.clone()).await;
+                let first_user_id = first_user.id();
+                let first_user_id_localpart = first_user_id.localpart().to_string();
 
-                first_user = &self.users[user1];
-                second_user = &self.users[user2];
+                let second_user = self.users.get_mut(*user2).unwrap();
+                second_user.add_friendship(_room_id.clone()).await;
+
+                let second_user_id_localpart = second_user.id().localpart().to_string();
+                let homeserver = second_user.id().server_name().to_string();
+
                 used += 1;
                 progress_bar.inc(1);
-            } else {
-                (first_user, second_user) = self.get_random_friendship();
-                futures.push(join_users_to_room(first_user, second_user, &progress_bar));
-            }
 
-            let friendship = Friendship::from_users(first_user, second_user);
+                Friendship::from_ids(
+                    homeserver,
+                    first_user_id_localpart,
+                    second_user_id_localpart,
+                )
+            } else {
+                let (first_user, second_user) = self.get_random_friendship();
+                futures.push(join_users_to_room(first_user, second_user, &progress_bar));
+
+                Friendship::from_users(first_user, second_user)
+            };
 
             self.friendships.push(friendship);
         }
@@ -201,8 +213,8 @@ impl State {
         let mut buffered_iter = stream_iter.buffer_unordered(self.config.room_creation_throughput);
 
         while let Some(res) = buffered_iter.next().await {
-            if let Some((user1, user2)) = res {
-                self.users_state.add_friendship(user1, user2)
+            if let Some((user1, user2, room_id)) = res {
+                self.users_state.add_friendship(user1, user2, room_id)
             }
         }
 

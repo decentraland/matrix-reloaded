@@ -2,6 +2,7 @@ use std::path::Path;
 use std::{collections::HashMap, fs::File, io::Write};
 
 use matrix_sdk::ruma::exports::serde_json;
+use matrix_sdk::ruma::RoomId;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DisplayFromStr;
@@ -9,7 +10,7 @@ use serde_with::DisplayFromStr;
 #[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
 pub struct SavedUserState {
     pub available: i64,
-    pub friendships: Vec<(usize, usize)>,
+    pub friendships: Vec<(usize, usize, Box<RoomId>)>,
 
     #[serde(skip)]
     pub friendships_by_user: HashMap<usize, Vec<usize>>,
@@ -19,7 +20,7 @@ impl SavedUserState {
     pub fn init_friendships(&mut self) {
         self.friendships_by_user = HashMap::new();
 
-        for &(user1, user2) in &self.friendships {
+        for &(user1, user2, _) in &self.friendships {
             let user1_friends = self.friendships_by_user.entry(user1).or_insert(vec![]);
             user1_friends.push(user2);
 
@@ -28,15 +29,16 @@ impl SavedUserState {
         }
     }
 
-    pub fn add_friendship(&mut self, user1: usize, user2: usize) {
+    pub fn add_friendship(&mut self, user1: usize, user2: usize, room_id: Box<RoomId>) {
         // This clause makes sure that a friendship is created only once, since they are bidirectional relations.
         // Once a friendship is established, both users have joined the same room, so it would make no sense in having the other direction
-        if self.friendships.contains(&(user1, user2)) || self.friendships.contains(&(user2, user1))
+        if self.friendships.contains(&(user1, user2, room_id.clone()))
+            || self.friendships.contains(&(user2, user1, room_id.clone()))
         {
             return;
         }
 
-        self.friendships.push((user1, user2));
+        self.friendships.push((user1, user2, room_id));
     }
 }
 
@@ -62,7 +64,7 @@ impl SavedUsers {
 }
 
 pub fn save_users(users: &SavedUsers, filename: String) {
-    let str = serde_json::to_string_pretty(users).unwrap();
+    let str = serde_json::to_string(users).unwrap();
 
     let mut buffer = File::create(filename).unwrap();
 

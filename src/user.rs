@@ -332,6 +332,10 @@ impl User<Synching> {
         }
     }
 
+    pub async fn add_friendship(&mut self, room_id: Box<RoomId>) {
+        self.state.rooms.lock().await.push(room_id.clone());
+    }
+
     pub async fn act(&mut self) {
         let client = self.client.lock().await;
         let rooms = self.state.rooms.lock().await;
@@ -375,13 +379,13 @@ pub fn join_users_to_room(
     first_user: &User<Synching>,
     second_user: &User<Synching>,
     progress_bar: &ProgressBar,
-) -> impl futures::Future<Output = Option<(usize, usize)>> {
+) -> impl futures::Future<Output = Option<(usize, usize, Box<RoomId>)>> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
     let progress_bar = progress_bar.clone();
 
     async move {
-        let mut res: Option<(usize, usize)> = None;
+        let mut res: Option<(usize, usize, Box<_>)> = None;
 
         let room_created = first_user.create_room().await;
         if let Some(room_id) = room_created {
@@ -391,6 +395,7 @@ pub fn join_users_to_room(
             res = Some((
                 get_user_index_from_id(first_user.id.localpart().to_string()),
                 get_user_index_from_id(second_user.id.localpart().to_string()),
+                room_id,
             ));
         } else {
             //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
