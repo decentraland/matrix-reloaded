@@ -11,7 +11,6 @@ use matrix_sdk::room::Room;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy, UiaaResponse};
 use matrix_sdk::ruma::api::error::FromHttpResponseError::Server;
 use matrix_sdk::ruma::api::error::ServerError::Known;
-use matrix_sdk::ruma::RoomAliasId;
 use matrix_sdk::ruma::{
     api::client::{
         account::register::v3::Request as RegistrationRequest, error::ErrorKind,
@@ -49,6 +48,7 @@ pub struct LoggedIn;
 #[derive(Clone)]
 pub struct Synching {
     rooms: Arc<Mutex<Vec<Box<RoomId>>>>,
+    available_room_ids: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -295,6 +295,7 @@ impl User<LoggedIn> {
             tx: self.tx.clone(),
             state: Synching {
                 rooms: Arc::new(Mutex::new(rooms)),
+                available_room_ids: vec![],
             },
             friendships: self.friendships.clone(),
         }
@@ -307,7 +308,7 @@ impl User<Synching> {
 
         let instant = Instant::now();
         let mut request = CreateRoomRequest::new();
-        let alias = friendship.to_string();
+        let alias = friendship.local_part.to_string();
         request.room_alias_name = Some(&alias);
         let response = client.create_room(request).await;
 
@@ -347,30 +348,50 @@ impl User<Synching> {
         }
     }
 
-    pub async fn add_friendship(&mut self, _other_user_id: String) {
+    pub async fn add_friendship(&mut self, friendship: &Friendship) {
         let client = self.client.lock().await.rooms();
-        let common = client.iter().map(|room| {
-            println!("room {}", room.room_id());
+        if let Some(room) = client.iter().find(|room| {
             if let Some(alias) = room.canonical_alias() {
-                println!("alias {}", alias.alias());
-            }
-            room.canonical_alias()
-        });
+                println!(
+                    "alias {} {}",
+                    alias.alias(),
+                    alias.alias().eq_ignore_ascii_case(&friendship.local_part)
+                );
 
-        for i in common {
-            println!("room: {}", i.is_some());
+                let res = alias.alias().eq_ignore_ascii_case(&friendship.local_part);
 
-            if let Some(alias) = i {
-                println!("room: {}", alias.alias());
+                return res;
             }
+
+            false
+        }) {
+            self.state
+                .available_room_ids
+                .push(room.room_id().to_string());
         }
     }
 
     pub async fn act(&mut self) {
         let client = self.client.lock().await;
-        let rooms = self.state.rooms.lock().await;
+        let _rooms = self.state.rooms.lock().await;
+        let rooms = _rooms
+            .iter()
+            .filter(|room| {
+                self.state
+                    .available_room_ids
+                    .iter()
+                    .any(|available_room| room.to_string().eq_ignore_ascii_case(available_room))
+            })
+            .collect::<Vec<_>>();
 
-        if rooms.len() == 0 {
+        println!(
+            "{} rooms length: {}, available_rooms: {}",
+            self.id,
+            rooms.len(),
+            self.state.available_room_ids.len()
+        );
+
+        if rooms.is_empty() {
             return;
         }
 
