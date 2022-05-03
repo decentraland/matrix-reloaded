@@ -1,4 +1,5 @@
 use crate::events::Event;
+use crate::friendship::Friendship;
 use crate::text::create_progress_bar;
 use crate::text::get_random_string;
 use crate::users_state::{load_users, save_users, SavedUserState};
@@ -10,6 +11,7 @@ use matrix_sdk::room::Room;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy, UiaaResponse};
 use matrix_sdk::ruma::api::error::FromHttpResponseError::Server;
 use matrix_sdk::ruma::api::error::ServerError::Known;
+use matrix_sdk::ruma::RoomAliasId;
 use matrix_sdk::ruma::{
     api::client::{
         account::register::v3::Request as RegistrationRequest, error::ErrorKind,
@@ -277,12 +279,22 @@ impl User<LoggedIn> {
             }
         });
 
+        let mut rooms = vec![];
+
+        let response = client.sync_once(SyncSettings::default()).await;
+
+        if let Ok(res) = response {
+            for (room, _) in res.rooms.join {
+                rooms.push(room);
+            }
+        }
+
         User {
             id: self.id.clone(),
             client: self.client.clone(),
             tx: self.tx.clone(),
             state: Synching {
-                rooms: Arc::new(Mutex::new(vec![])),
+                rooms: Arc::new(Mutex::new(rooms)),
             },
             friendships: self.friendships.clone(),
         }
@@ -290,12 +302,15 @@ impl User<LoggedIn> {
 }
 
 impl User<Synching> {
-    pub async fn create_room(&mut self) -> Option<Box<RoomId>> {
+    pub async fn create_room(&mut self, friendship: &Friendship) -> Option<Box<RoomId>> {
         let client = self.client.lock().await;
 
         let instant = Instant::now();
-        let request = CreateRoomRequest::new();
+        let mut request = CreateRoomRequest::new();
+        let alias = friendship.to_string();
+        request.room_alias_name = Some(&alias);
         let response = client.create_room(request).await;
+
         match response {
             Ok(ref response) => {
                 self.send(Event::RequestDuration((
@@ -332,8 +347,23 @@ impl User<Synching> {
         }
     }
 
-    pub async fn add_friendship(&mut self, room_id: Box<RoomId>) {
-        self.state.rooms.lock().await.push(room_id.clone());
+    pub async fn add_friendship(&mut self, _other_user_id: String) {
+        let client = self.client.lock().await.rooms();
+        let common = client.iter().map(|room| {
+            println!("room {}", room.room_id());
+            if let Some(alias) = room.canonical_alias() {
+                println!("alias {}", alias.alias());
+            }
+            room.canonical_alias()
+        });
+
+        for i in common {
+            println!("room: {}", i.is_some());
+
+            if let Some(alias) = i {
+                println!("room: {}", alias.alias());
+            }
+        }
     }
 
     pub async fn act(&mut self) {
@@ -378,6 +408,7 @@ impl User<Synching> {
 pub fn join_users_to_room(
     first_user: &User<Synching>,
     second_user: &User<Synching>,
+    friendship: Friendship,
     progress_bar: &ProgressBar,
 ) -> impl futures::Future<Output = Option<(usize, usize, Box<RoomId>)>> {
     let mut first_user = first_user.clone();
@@ -387,14 +418,17 @@ pub fn join_users_to_room(
     async move {
         let mut res: Option<(usize, usize, Box<_>)> = None;
 
-        let room_created = first_user.create_room().await;
+        let first_user_id = first_user.id.localpart().to_string();
+        let second_user_id = second_user.id.localpart().to_string();
+
+        let room_created = first_user.create_room(&friendship).await;
         if let Some(room_id) = room_created {
             first_user.join_room(&room_id).await;
             second_user.join_room(&room_id).await;
 
             res = Some((
-                get_user_index_from_id(first_user.id.localpart().to_string()),
-                get_user_index_from_id(second_user.id.localpart().to_string()),
+                get_user_index_from_id(first_user_id),
+                get_user_index_from_id(second_user_id),
                 room_id,
             ));
         } else {

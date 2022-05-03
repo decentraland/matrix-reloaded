@@ -30,15 +30,19 @@ impl SavedUserState {
     }
 
     pub fn add_friendship(&mut self, user1: usize, user2: usize, room_id: Box<RoomId>) {
+        let mut users = [user1, user2];
+        users.sort_unstable();
+
         // This clause makes sure that a friendship is created only once, since they are bidirectional relations.
-        // Once a friendship is established, both users have joined the same room, so it would make no sense in having the other direction
-        if self.friendships.contains(&(user1, user2, room_id.clone()))
-            || self.friendships.contains(&(user2, user1, room_id.clone()))
+        // Since the users array is sorted when created, only checking one direction is enough
+        if self
+            .friendships
+            .contains(&(users[0], users[1], room_id.clone()))
         {
             return;
         }
 
-        self.friendships.push((user1, user2, room_id));
+        self.friendships.push((users[0], users[1], room_id));
     }
 }
 

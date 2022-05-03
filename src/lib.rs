@@ -181,12 +181,16 @@ impl State {
                 let &(user1, user2, _room_id) = &available_friendships[used];
 
                 let first_user = self.users.get_mut(*user1).unwrap();
-                first_user.add_friendship(_room_id.clone()).await;
+                first_user
+                    .add_friendship(_room_id.clone().to_string())
+                    .await;
                 let first_user_id = first_user.id();
                 let first_user_id_localpart = first_user_id.localpart().to_string();
 
                 let second_user = self.users.get_mut(*user2).unwrap();
-                second_user.add_friendship(_room_id.clone()).await;
+                second_user
+                    .add_friendship(_room_id.clone().to_string())
+                    .await;
 
                 let second_user_id_localpart = second_user.id().localpart().to_string();
                 let homeserver = second_user.id().server_name().to_string();
@@ -201,9 +205,16 @@ impl State {
                 )
             } else {
                 let (first_user, second_user) = self.get_random_friendship();
-                futures.push(join_users_to_room(first_user, second_user, &progress_bar));
+                let friendship = Friendship::from_users(first_user, second_user);
 
-                Friendship::from_users(first_user, second_user)
+                futures.push(join_users_to_room(
+                    first_user,
+                    second_user,
+                    friendship.clone(),
+                    &progress_bar,
+                ));
+
+                friendship
             };
 
             self.friendships.push(friendship);
