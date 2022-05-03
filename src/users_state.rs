@@ -2,7 +2,6 @@ use std::path::Path;
 use std::{collections::HashMap, fs::File, io::Write};
 
 use matrix_sdk::ruma::exports::serde_json;
-use matrix_sdk::ruma::RoomId;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DisplayFromStr;
@@ -10,7 +9,7 @@ use serde_with::DisplayFromStr;
 #[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
 pub struct SavedUserState {
     pub available: i64,
-    pub friendships: Vec<(usize, usize, Box<RoomId>)>,
+    pub friendships: Vec<(usize, usize)>,
 
     #[serde(skip)]
     pub friendships_by_user: HashMap<usize, Vec<usize>>,
@@ -20,7 +19,7 @@ impl SavedUserState {
     pub fn init_friendships(&mut self) {
         self.friendships_by_user = HashMap::new();
 
-        for &(user1, user2, _) in &self.friendships {
+        for &(user1, user2) in &self.friendships {
             let user1_friends = self.friendships_by_user.entry(user1).or_insert(vec![]);
             user1_friends.push(user2);
 
@@ -29,20 +28,17 @@ impl SavedUserState {
         }
     }
 
-    pub fn add_friendship(&mut self, user1: usize, user2: usize, room_id: Box<RoomId>) {
+    pub fn add_friendship(&mut self, user1: usize, user2: usize) {
         let mut users = [user1, user2];
         users.sort_unstable();
 
         // This clause makes sure that a friendship is created only once, since they are bidirectional relations.
         // Since the users array is sorted when created, only checking one direction is enough
-        if self
-            .friendships
-            .contains(&(users[0], users[1], room_id.clone()))
-        {
+        if self.friendships.contains(&(users[0], users[1])) {
             return;
         }
 
-        self.friendships.push((users[0], users[1], room_id));
+        self.friendships.push((users[0], users[1]));
     }
 }
 

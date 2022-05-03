@@ -352,15 +352,7 @@ impl User<Synching> {
         let client = self.client.lock().await.rooms();
         if let Some(room) = client.iter().find(|room| {
             if let Some(alias) = room.canonical_alias() {
-                println!(
-                    "alias {} {}",
-                    alias.alias(),
-                    alias.alias().eq_ignore_ascii_case(&friendship.local_part)
-                );
-
-                let res = alias.alias().eq_ignore_ascii_case(&friendship.local_part);
-
-                return res;
+                return alias.alias().eq_ignore_ascii_case(&friendship.local_part);
             }
 
             false
@@ -383,13 +375,6 @@ impl User<Synching> {
                     .any(|available_room| room.to_string().eq_ignore_ascii_case(available_room))
             })
             .collect::<Vec<_>>();
-
-        println!(
-            "{} rooms length: {}, available_rooms: {}",
-            self.id,
-            rooms.len(),
-            self.state.available_room_ids.len()
-        );
 
         if rooms.is_empty() {
             return;
@@ -431,13 +416,13 @@ pub fn join_users_to_room(
     second_user: &User<Synching>,
     friendship: Friendship,
     progress_bar: &ProgressBar,
-) -> impl futures::Future<Output = Option<(usize, usize, Box<RoomId>)>> {
+) -> impl futures::Future<Output = Option<(usize, usize)>> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
     let progress_bar = progress_bar.clone();
 
     async move {
-        let mut res: Option<(usize, usize, Box<_>)> = None;
+        let mut res: Option<(usize, usize)> = None;
 
         let first_user_id = first_user.id.localpart().to_string();
         let second_user_id = second_user.id.localpart().to_string();
@@ -450,7 +435,6 @@ pub fn join_users_to_room(
             res = Some((
                 get_user_index_from_id(first_user_id),
                 get_user_index_from_id(second_user_id),
-                room_id,
             ));
         } else {
             //TODO!: This should panic or abort somehow after exhausting all retries of creating the room

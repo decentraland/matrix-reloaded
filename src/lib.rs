@@ -155,7 +155,7 @@ impl State {
             .users_state
             .friendships
             .iter()
-            .filter(|(user1, user2, _)| user1 < &self.users.len() && user2 < &self.users.len())
+            .filter(|(user1, user2)| user1 < &self.users.len() && user2 < &self.users.len())
             .collect::<Vec<_>>();
 
         println!("Available friendships {}", available_friendships.len());
@@ -178,7 +178,7 @@ impl State {
         // It's important to note that only creating new ones is async, otherwise it's just populating the friendships array
         while self.friendships.len() < amount_of_friendships {
             let friendship = if used < available_friendships.len() {
-                let &(user1, user2, _room_id) = &available_friendships[used];
+                let &(user1, user2) = &available_friendships[used];
 
                 let second_user_id_localpart = self
                     .users
@@ -229,8 +229,8 @@ impl State {
         let mut buffered_iter = stream_iter.buffer_unordered(self.config.room_creation_throughput);
 
         while let Some(res) = buffered_iter.next().await {
-            if let Some((user1, user2, room_id)) = res {
-                self.users_state.add_friendship(user1, user2, room_id)
+            if let Some((user1, user2)) = res {
+                self.users_state.add_friendship(user1, user2)
             }
         }
 
