@@ -341,6 +341,9 @@ impl User<Synching> {
                 )))
                 .await;
                 self.state.rooms.lock().await.push(response.room_id.clone());
+                self.state
+                    .available_room_ids
+                    .push(response.room_id.to_string());
             }
             Err(e) => {
                 self.send(Event::Error((UserRequest::JoinRoom, e))).await;
