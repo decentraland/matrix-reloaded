@@ -189,7 +189,6 @@ impl State {
                     .to_string();
 
                 let first_user = self.users.get_mut(*user1).unwrap();
-
                 let first_user_id_localpart = first_user.id().localpart().to_string();
                 let homeserver = first_user.id().server_name().to_string();
 

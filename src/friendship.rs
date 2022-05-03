@@ -4,14 +4,19 @@ use crate::user::User;
 
 #[derive(Clone, Eq)]
 pub struct Friendship {
-    pub full_string: String,
     pub local_part: String,
     pub homeserver: String,
 }
 
+impl Friendship {
+    fn get_full_string(&self) -> String {
+        format!("@{}:{}", self.local_part, self.homeserver)
+    }
+}
+
 impl PartialEq for Friendship {
     fn eq(&self, other: &Self) -> bool {
-        self.full_string == other.full_string
+        self.get_full_string().eq(&other.get_full_string())
     }
 }
 
@@ -23,7 +28,7 @@ impl PartialOrd for Friendship {
 
 impl Ord for Friendship {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.full_string.cmp(&other.full_string)
+        self.get_full_string().cmp(&other.get_full_string())
     }
 }
 
@@ -50,7 +55,6 @@ impl FriendshipID for Friendship {
         let local_part = get_local_part(first, second);
 
         Friendship {
-            full_string: format!("@{local_part}:{homeserver}"),
             homeserver: homeserver.to_string(),
             local_part,
         }
@@ -65,8 +69,7 @@ impl FriendshipID for Friendship {
         let local_part = get_local_part(first, second);
 
         Friendship {
-            full_string: format!("@{local_part}:{homeserver}"),
-            homeserver: homeserver.to_string(),
+            homeserver,
             local_part,
         }
     }
