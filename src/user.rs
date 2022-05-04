@@ -244,6 +244,7 @@ impl User<Registered> {
                 })
             }
             Err(e) => {
+                println!("LOGIN ERROR {} {}", e, self.id.localpart());
                 if let matrix_sdk::Error::Http(e) = e {
                     self.send(Event::Error((UserRequest::Login, e))).await;
                 }
@@ -307,9 +308,8 @@ impl User<Synching> {
         let client = self.client.lock().await;
 
         let instant = Instant::now();
-        let mut request = CreateRoomRequest::new();
         let alias = friendship.local_part.to_string();
-        request.room_alias_name = Some(&alias);
+        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias) });
         let response = client.create_room(request).await;
 
         match response {
@@ -368,8 +368,8 @@ impl User<Synching> {
 
     pub async fn act(&mut self) {
         let client = self.client.lock().await;
-        let _rooms = self.state.rooms.lock().await;
-        let rooms = _rooms
+        let rooms = self.state.rooms.lock().await;
+        let rooms = rooms
             .iter()
             .filter(|room| {
                 self.state
@@ -419,13 +419,13 @@ pub fn join_users_to_room(
     second_user: &User<Synching>,
     friendship: Friendship,
     progress_bar: &ProgressBar,
-) -> impl futures::Future<Output = Option<(usize, usize)>> {
+) -> impl futures::Future<Output = Option<(String, String)>> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
     let progress_bar = progress_bar.clone();
 
     async move {
-        let mut res: Option<(usize, usize)> = None;
+        let mut res: Option<(String, String)> = None;
 
         let first_user_id = first_user.id.localpart().to_string();
         let second_user_id = second_user.id.localpart().to_string();
@@ -435,10 +435,7 @@ pub fn join_users_to_room(
             first_user.join_room(&room_id).await;
             second_user.join_room(&room_id).await;
 
-            res = Some((
-                get_user_index_from_id(first_user_id),
-                get_user_index_from_id(second_user_id),
-            ));
+            res = Some((first_user_id, second_user_id));
         } else {
             //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
             log::info!("User {} couldn't create a room", first_user.id());
@@ -446,16 +443,6 @@ pub fn join_users_to_room(
         progress_bar.inc(1);
 
         res
-    }
-}
-
-fn get_user_index_from_id(user_id: String) -> usize {
-    // The prefix "user_" has 5 chars that's why we start on position 5
-    let starting_index = 5;
-
-    match user_id[starting_index..].parse::<usize>() {
-        Ok(res) => res,
-        Err(err) => panic!("Received an invalid string {}", err),
     }
 }
 

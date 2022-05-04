@@ -9,36 +9,46 @@ use serde_with::DisplayFromStr;
 #[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
 pub struct SavedUserState {
     pub available: i64,
-    pub friendships: Vec<(usize, usize)>,
+    pub friendships: Vec<(String, String)>,
 
     #[serde(skip)]
-    pub friendships_by_user: HashMap<usize, Vec<usize>>,
+    pub friendships_by_user: HashMap<String, Vec<String>>,
 }
 
 impl SavedUserState {
     pub fn init_friendships(&mut self) {
         self.friendships_by_user = HashMap::new();
 
-        for &(user1, user2) in &self.friendships {
-            let user1_friends = self.friendships_by_user.entry(user1).or_insert(vec![]);
-            user1_friends.push(user2);
+        for (user1, user2) in &self.friendships {
+            let user1_friends = self
+                .friendships_by_user
+                .entry(user1.to_string())
+                .or_insert(vec![]);
+            user1_friends.push(user2.to_string());
 
-            let user2_friends = self.friendships_by_user.entry(user2).or_insert(vec![]);
-            user2_friends.push(user1);
+            let user2_friends = self
+                .friendships_by_user
+                .entry(user2.to_string())
+                .or_insert(vec![]);
+            user2_friends.push(user1.to_string());
         }
     }
 
-    pub fn add_friendship(&mut self, user1: usize, user2: usize) {
+    pub fn add_friendship(&mut self, user1: String, user2: String) {
         let mut users = [user1, user2];
         users.sort_unstable();
 
         // This clause makes sure that a friendship is created only once, since they are bidirectional relations.
         // Since the users array is sorted when created, only checking one direction is enough
-        if self.friendships.contains(&(users[0], users[1])) {
+        if self
+            .friendships
+            .contains(&(users[0].to_string(), users[1].to_string()))
+        {
             return;
         }
 
-        self.friendships.push((users[0], users[1]));
+        self.friendships
+            .push((users[0].to_string(), users[1].to_string()));
     }
 }
 

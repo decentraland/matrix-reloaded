@@ -10,6 +10,7 @@ use serde_with::serde_as;
 use serde_with::DurationSeconds;
 use users_state::save_users;
 
+use std::collections::HashMap;
 use std::fs::{create_dir_all, File};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -64,7 +65,7 @@ pub struct Configuration {
 pub struct State {
     config: Configuration,
     friendships: Vec<Friendship>,
-    users: Vec<User<Synching>>,
+    users: HashMap<String, User<Synching>>,
     users_state: SavedUserState,
     available_users: i64,
 }
@@ -90,7 +91,7 @@ impl State {
         Self {
             config,
             friendships: vec![],
-            users: vec![],
+            users: HashMap::new(),
             available_users: users_state.available,
             users_state,
         }
@@ -135,7 +136,9 @@ impl State {
 
         while let Some(user) = user_creations_buffer.next().await {
             if let Some(user) = user {
-                self.users.push(user);
+                self.users.insert(user.id().localpart().to_string(), user);
+            } else {
+                println!("couldn't login user");
             }
         }
 
@@ -150,14 +153,21 @@ impl State {
 
     async fn init_friendships(&mut self) {
         let amount_of_friendships = self.calculate_step_friendships();
+        println!("Running test for {} friendships", amount_of_friendships);
 
         let available_friendships = self
             .users_state
             .friendships
             .iter()
-            .filter(|(user1, user2)| user1 < &self.users.len() && user2 < &self.users.len())
+            .filter(|(user1, user2)| {
+                self.users.contains_key(user1) && self.users.contains_key(user2)
+            })
             .collect::<Vec<_>>();
 
+        println!("self.users {}", self.users.len());
+        for key in self.users.keys() {
+            println!("User {}", key);
+        }
         println!("Available friendships {}", available_friendships.len());
 
         let progress_bar = create_progress_bar(
@@ -180,15 +190,10 @@ impl State {
             let friendship = if used < available_friendships.len() {
                 let &(user1, user2) = &available_friendships[used];
 
-                let second_user_id_localpart = self
-                    .users
-                    .get_mut(*user2)
-                    .unwrap()
-                    .id()
-                    .localpart()
-                    .to_string();
+                let second_user_id_localpart =
+                    self.users.get(user2).unwrap().id().localpart().to_string();
 
-                let first_user = self.users.get_mut(*user1).unwrap();
+                let first_user = self.users.get_mut(user1).unwrap();
                 let first_user_id_localpart = first_user.id().localpart().to_string();
                 let homeserver = first_user.id().server_name().to_string();
 
@@ -200,11 +205,13 @@ impl State {
 
                 first_user.add_friendship(&friendship).await;
 
-                let second_user = self.users.get_mut(*user2).unwrap();
+                let second_user = self.users.get_mut(user2).unwrap();
                 second_user.add_friendship(&friendship).await;
 
                 used += 1;
                 progress_bar.inc(1);
+
+                println!("returning used {}", friendship.local_part);
 
                 friendship
             } else {
@@ -218,8 +225,12 @@ impl State {
                     &progress_bar,
                 ));
 
+                println!("returning {}", friendship.local_part);
+
                 friendship
             };
+
+            println!("Added friendship {}", friendship.local_part);
 
             self.friendships.push(friendship);
         }
@@ -258,15 +269,15 @@ impl State {
             let first_user = self.users.iter().choose(&mut rng).unwrap();
             let second_user = self.users.iter().choose(&mut rng).unwrap();
 
-            if first_user.id() == second_user.id() {
+            if first_user.0 == second_user.0 {
                 continue;
             }
-            let friendship = Friendship::from_users(first_user, second_user);
+            let friendship = Friendship::from_users(first_user.1, second_user.1);
             if self.friendships.contains(&friendship) {
                 continue;
             }
 
-            break (first_user, second_user);
+            break (first_user.1, second_user.1);
         }
     }
 
@@ -297,7 +308,7 @@ impl State {
             for user in self.users.iter().choose_multiple(&mut rng, users_to_act) {
                 // Every spawn result in a tokio::select! with the future and the timeout
                 handles.push(controller.spawn({
-                    let mut user = user.clone();
+                    let mut user = user.1.clone();
                     async move {
                         user.act().await;
                     }
