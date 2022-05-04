@@ -164,10 +164,6 @@ impl State {
             })
             .collect::<Vec<_>>();
 
-        println!("self.users {}", self.users.len());
-        for key in self.users.keys() {
-            println!("User {}", key);
-        }
         println!("Available friendships {}", available_friendships.len());
 
         let progress_bar = create_progress_bar(
@@ -211,8 +207,6 @@ impl State {
                 used += 1;
                 progress_bar.inc(1);
 
-                println!("returning used {}", friendship.local_part);
-
                 friendship
             } else {
                 let (first_user, second_user) = self.get_random_friendship();
@@ -225,12 +219,8 @@ impl State {
                     &progress_bar,
                 ));
 
-                println!("returning {}", friendship.local_part);
-
                 friendship
             };
-
-            println!("Added friendship {}", friendship.local_part);
 
             self.friendships.push(friendship);
         }
