@@ -284,7 +284,7 @@ impl State {
         );
 
         progress_bar.tick();
-        let mut rng = rand::thread_rng();
+
         loop {
             if start.elapsed().ge(&self.config.step_duration) {
                 // elapsed time for current step reached, breaking the loop and proceed to next step
@@ -295,10 +295,12 @@ impl State {
             let mut controller = TaskController::with_timeout(self.config.tick_duration);
 
             let mut handles = vec![];
-            for user in self.users.iter().choose_multiple(&mut rng, users_to_act) {
+            let users_list = self.get_users_list(users_to_act);
+
+            for user in users_list {
                 // Every spawn result in a tokio::select! with the future and the timeout
                 handles.push(controller.spawn({
-                    let mut user = user.1.clone();
+                    let mut user = user.clone();
                     async move {
                         user.act().await;
                     }
@@ -320,6 +322,15 @@ impl State {
         tx.send(Event::AllMessagesSent)
             .await
             .expect("AllMessagesSent event");
+    }
+
+    fn get_users_list(&self, users_to_act: usize) -> Vec<&User<Synching>> {
+        self.users
+            .iter()
+            .map(|user| user.1)
+            .filter(|user| user.has_friendships())
+            .take(users_to_act)
+            .collect::<Vec<_>>()
     }
 
     async fn waiting_period(&self, tx: Sender<Event>, metrics: &Metrics) {

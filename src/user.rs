@@ -51,6 +51,12 @@ pub struct Synching {
     available_room_ids: Vec<String>,
 }
 
+impl User<Synching> {
+    pub fn has_friendships(&self) -> bool {
+        !self.state.available_room_ids.is_empty()
+    }
+}
+
 #[derive(Clone)]
 pub struct User<State> {
     id: Box<UserId>,
