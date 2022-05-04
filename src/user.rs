@@ -369,6 +369,7 @@ impl User<Synching> {
     pub async fn act(&mut self) {
         let client = self.client.lock().await;
         let rooms = self.state.rooms.lock().await;
+
         let rooms = rooms
             .iter()
             .filter(|room| {
