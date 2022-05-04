@@ -282,6 +282,8 @@ impl User<LoggedIn> {
 
         let mut rooms = vec![];
 
+        // This sync once is used so that the client loads all the rooms that the user has once joined,
+        // this is because the get_joined_room will then run locally and avoid http requests
         let response = client.sync_once(SyncSettings::default()).await;
 
         if let Ok(res) = response {
