@@ -30,6 +30,10 @@ rustup component add llvm-tools-preview
 brew install michaeleisel/zld/zld
 ```
 
+#### Notes
+- You might need to install XCode first from the App Store (not the Command Line Tools)
+- If Command Line Tools where already present in the system you might need to first 1) make sure XCode is in the `/Applications` directory and not the user apps one and 2) point xcode-select to the actual XCode app by using: `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`
+
 ## Quick start
 
 1. First of all, copy the [`Config.toml.example`](Config.toml.example) file in the root directory of the project to `Config.toml`, this file will be ignored in the git repository.
