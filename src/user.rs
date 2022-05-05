@@ -1,4 +1,5 @@
 use crate::events::Event;
+use crate::friendship::Friendship;
 use crate::text::create_progress_bar;
 use crate::text::get_random_string;
 use crate::users_state::{load_users, save_users, SavedUserState};
@@ -47,6 +48,7 @@ pub struct LoggedIn;
 #[derive(Clone)]
 pub struct Synching {
     rooms: Arc<Mutex<Vec<Box<RoomId>>>>,
+    available_room_ids: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -242,6 +244,7 @@ impl User<Registered> {
                 })
             }
             Err(e) => {
+                log::error!("LOGIN ERROR {} {}", e, self.id.localpart());
                 if let matrix_sdk::Error::Http(e) = e {
                     self.send(Event::Error((UserRequest::Login, e))).await;
                 }
@@ -277,12 +280,25 @@ impl User<LoggedIn> {
             }
         });
 
+        let mut rooms = vec![];
+
+        // This sync once is used so that the client loads all the rooms that the user has once joined,
+        // this is because the get_joined_room will then run locally and avoid http requests
+        let response = client.sync_once(SyncSettings::default()).await;
+
+        if let Ok(res) = response {
+            for (room, _) in res.rooms.join {
+                rooms.push(room);
+            }
+        }
+
         User {
             id: self.id.clone(),
             client: self.client.clone(),
             tx: self.tx.clone(),
             state: Synching {
-                rooms: Arc::new(Mutex::new(vec![])),
+                rooms: Arc::new(Mutex::new(rooms)),
+                available_room_ids: vec![],
             },
             friendships: self.friendships.clone(),
         }
@@ -290,12 +306,18 @@ impl User<LoggedIn> {
 }
 
 impl User<Synching> {
-    pub async fn create_room(&mut self) -> Option<Box<RoomId>> {
+    pub fn has_friendships(&self) -> bool {
+        !self.state.available_room_ids.is_empty()
+    }
+
+    pub async fn create_room(&mut self, friendship: &Friendship) -> Option<Box<RoomId>> {
         let client = self.client.lock().await;
 
         let instant = Instant::now();
-        let request = CreateRoomRequest::new();
+        let alias = friendship.local_part.to_string();
+        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias) });
         let response = client.create_room(request).await;
+
         match response {
             Ok(ref response) => {
                 self.send(Event::RequestDuration((
@@ -325,6 +347,9 @@ impl User<Synching> {
                 )))
                 .await;
                 self.state.rooms.lock().await.push(response.room_id.clone());
+                self.state
+                    .available_room_ids
+                    .push(response.room_id.to_string());
             }
             Err(e) => {
                 self.send(Event::Error((UserRequest::JoinRoom, e))).await;
@@ -332,11 +357,36 @@ impl User<Synching> {
         }
     }
 
+    pub async fn add_friendship(&mut self, friendship: &Friendship) {
+        let client = self.client.lock().await.rooms();
+        if let Some(room) = client.iter().find(|room| {
+            if let Some(alias) = room.canonical_alias() {
+                return alias.alias().eq_ignore_ascii_case(&friendship.local_part);
+            }
+
+            false
+        }) {
+            self.state
+                .available_room_ids
+                .push(room.room_id().to_string());
+        }
+    }
+
     pub async fn act(&mut self) {
         let client = self.client.lock().await;
         let rooms = self.state.rooms.lock().await;
 
-        if rooms.len() == 0 {
+        let rooms = rooms
+            .iter()
+            .filter(|room| {
+                self.state
+                    .available_room_ids
+                    .iter()
+                    .any(|available_room| room.to_string().eq_ignore_ascii_case(available_room))
+            })
+            .collect::<Vec<_>>();
+
+        if rooms.is_empty() {
             return;
         }
 
@@ -374,24 +424,25 @@ impl User<Synching> {
 pub fn join_users_to_room(
     first_user: &User<Synching>,
     second_user: &User<Synching>,
+    friendship: Friendship,
     progress_bar: &ProgressBar,
-) -> impl futures::Future<Output = Option<(usize, usize)>> {
+) -> impl futures::Future<Output = Option<(String, String)>> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
     let progress_bar = progress_bar.clone();
 
     async move {
-        let mut res: Option<(usize, usize)> = None;
+        let mut res: Option<(String, String)> = None;
 
-        let room_created = first_user.create_room().await;
+        let first_user_id = first_user.id.localpart().to_string();
+        let second_user_id = second_user.id.localpart().to_string();
+
+        let room_created = first_user.create_room(&friendship).await;
         if let Some(room_id) = room_created {
             first_user.join_room(&room_id).await;
             second_user.join_room(&room_id).await;
 
-            res = Some((
-                get_user_index_from_id(first_user.id.localpart().to_string()),
-                get_user_index_from_id(second_user.id.localpart().to_string()),
-            ));
+            res = Some((first_user_id, second_user_id));
         } else {
             //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
             log::info!("User {} couldn't create a room", first_user.id());
@@ -399,16 +450,6 @@ pub fn join_users_to_room(
         progress_bar.inc(1);
 
         res
-    }
-}
-
-fn get_user_index_from_id(user_id: String) -> usize {
-    // The prefix "user_" has 5 chars that's why we start on position 5
-    let starting_index = 5;
-
-    match user_id[starting_index..].parse::<usize>() {
-        Ok(res) => res,
-        Err(err) => panic!("Received an invalid string {}", err),
     }
 }
 
