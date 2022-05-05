@@ -51,12 +51,6 @@ pub struct Synching {
     available_room_ids: Vec<String>,
 }
 
-impl User<Synching> {
-    pub fn has_friendships(&self) -> bool {
-        !self.state.available_room_ids.is_empty()
-    }
-}
-
 #[derive(Clone)]
 pub struct User<State> {
     id: Box<UserId>,
@@ -250,7 +244,7 @@ impl User<Registered> {
                 })
             }
             Err(e) => {
-                println!("LOGIN ERROR {} {}", e, self.id.localpart());
+                log::error!("LOGIN ERROR {} {}", e, self.id.localpart());
                 if let matrix_sdk::Error::Http(e) = e {
                     self.send(Event::Error((UserRequest::Login, e))).await;
                 }
@@ -312,6 +306,10 @@ impl User<LoggedIn> {
 }
 
 impl User<Synching> {
+    pub fn has_friendships(&self) -> bool {
+        !self.state.available_room_ids.is_empty()
+    }
+
     pub async fn create_room(&mut self, friendship: &Friendship) -> Option<Box<RoomId>> {
         let client = self.client.lock().await;
 

@@ -186,18 +186,11 @@ impl State {
             let friendship = if used < available_friendships.len() {
                 let &(user1, user2) = &available_friendships[used];
 
-                let second_user_id_localpart =
-                    self.users.get(user2).unwrap().id().localpart().to_string();
-
                 let first_user = self.users.get_mut(user1).unwrap();
-                let first_user_id_localpart = first_user.id().localpart().to_string();
                 let homeserver = first_user.id().server_name().to_string();
 
-                let friendship = Friendship::from_ids(
-                    homeserver,
-                    first_user_id_localpart,
-                    second_user_id_localpart,
-                );
+                let friendship =
+                    Friendship::from_ids(homeserver, user1.to_string(), user2.to_string());
 
                 first_user.add_friendship(&friendship).await;
 
@@ -295,7 +288,7 @@ impl State {
             let mut controller = TaskController::with_timeout(self.config.tick_duration);
 
             let mut handles = vec![];
-            let users_list = self.get_users_list(users_to_act);
+            let users_list = self.get_users_with_friendship(users_to_act);
 
             for user in users_list {
                 // Every spawn result in a tokio::select! with the future and the timeout
@@ -324,7 +317,7 @@ impl State {
             .expect("AllMessagesSent event");
     }
 
-    fn get_users_list(&self, users_to_act: usize) -> Vec<&User<Synching>> {
+    fn get_users_with_friendship(&self, users_to_act: usize) -> Vec<&User<Synching>> {
         self.users
             .iter()
             .map(|user| user.1)
