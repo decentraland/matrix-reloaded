@@ -20,6 +20,7 @@ use matrix_sdk::ruma::{
 };
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::Client;
+use matrix_sdk::HttpError;
 use matrix_sdk::HttpError::UiaaError;
 use matrix_sdk::{
     config::SyncSettings,
@@ -310,27 +311,65 @@ impl User<Synching> {
         !self.state.available_room_ids.is_empty()
     }
 
-    pub async fn create_room(&mut self, friendship: &Friendship) -> Option<Box<RoomId>> {
+    pub async fn create_room(
+        &mut self,
+        friendship: &Friendship,
+        retry_attempts: usize,
+    ) -> Option<Box<RoomId>> {
         let client = self.client.lock().await;
 
         let instant = Instant::now();
         let alias = friendship.local_part.to_string();
         let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias) });
-        let response = client.create_room(request).await;
 
-        match response {
-            Ok(ref response) => {
-                self.send(Event::RequestDuration((
-                    UserRequest::CreateRoom,
-                    instant.elapsed(),
-                )))
-                .await;
-                Some(response.room_id.clone())
+        let mut i = 0;
+
+        loop {
+            if i == retry_attempts {
+                log::warn!(
+                    "Creating room {} failed due to max retry attempts",
+                    friendship.local_part
+                );
+                break None;
             }
-            Err(e) => {
-                println!("Failed to create room {}", e);
-                self.send(Event::Error((UserRequest::CreateRoom, e))).await;
-                None
+
+            i += 1;
+
+            let response = client.create_room(request).await;
+
+            match response {
+                Ok(ref response) => {
+                    self.send(Event::RequestDuration((
+                        UserRequest::CreateRoom,
+                        instant.elapsed(),
+                    )))
+                    .await;
+                    break Some(response.room_id.clone());
+                }
+                Err(e) => {
+                    let error: HttpError = e;
+
+                    log::error!("Failed to create room {}", e);
+                    self.send(Event::Error((UserRequest::CreateRoom, e))).await;
+
+                    if let Some(error_response) = error.uiaa_response() {
+                        if let Some(error_kind) = error_response.auth_error {
+                            match error_kind.kind {
+                                ErrorKind::RoomInUse => {
+                                    break None;
+                                }
+                                ErrorKind::InvalidRoomState => {
+                                    break None;
+                                }
+                                ErrorKind::ResourceLimitExceeded { admin_contact } => {
+                                    // TODO! should we have some kind of thread sleep here?
+                                    break None;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -426,6 +465,7 @@ pub fn join_users_to_room(
     second_user: &User<Synching>,
     friendship: Friendship,
     progress_bar: &ProgressBar,
+    retry_attempts: usize,
 ) -> impl futures::Future<Output = Option<(String, String)>> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
@@ -437,7 +477,7 @@ pub fn join_users_to_room(
         let first_user_id = first_user.id.localpart().to_string();
         let second_user_id = second_user.id.localpart().to_string();
 
-        let room_created = first_user.create_room(&friendship).await;
+        let room_created = first_user.create_room(&friendship, retry_attempts).await;
         if let Some(room_id) = room_created {
             first_user.join_room(&room_id).await;
             second_user.join_room(&room_id).await;
@@ -517,8 +557,7 @@ async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client>
             Some(client_value)
         }
         Err(_) => {
-            println!("got request config error {}", client.err().unwrap());
-            log::info!("Failed to create client");
+            log::info!("Failed to create client {}", client.err().unwrap());
             None
         }
     }
