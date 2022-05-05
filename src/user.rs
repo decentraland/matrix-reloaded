@@ -20,7 +20,6 @@ use matrix_sdk::ruma::{
 };
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::Client;
-use matrix_sdk::HttpError;
 use matrix_sdk::HttpError::UiaaError;
 use matrix_sdk::{
     config::SyncSettings,
