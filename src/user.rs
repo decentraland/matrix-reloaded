@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 use strum::Display;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
+use tokio::time::sleep;
 
 const PASSWORD: &str = "asdfasdf";
 
@@ -314,11 +315,13 @@ impl User<Synching> {
         &mut self,
         friendship: &Friendship,
         retry_attempts: usize,
+        max_resource_wait_attempts: usize,
     ) -> Option<Box<RoomId>> {
         let client = self.client.lock().await;
         let alias = friendship.local_part.to_string();
 
         let mut i = 0;
+        let mut max_resource_attempts = 0;
 
         loop {
             if i == retry_attempts {
@@ -354,13 +357,22 @@ impl User<Synching> {
                                 ErrorKind::RoomInUse => {
                                     self.send(Event::Error((UserRequest::CreateRoom, e))).await;
 
+                                    // We break here because this is an unrecoverable error, this shouldn't happen since it means we're trying to create an already existent room
                                     break None;
                                 }
                                 ErrorKind::ResourceLimitExceeded { admin_contact: _ } => {
-                                    self.send(Event::Error((UserRequest::CreateRoom, e))).await;
+                                    max_resource_attempts += 1;
 
-                                    // TODO! should we have some kind of thread sleep here?
-                                    break None;
+                                    if max_resource_attempts < max_resource_wait_attempts {
+                                        let mut rng = rand::thread_rng();
+
+                                        sleep(Duration::from_secs(rng.gen_range(2..5))).await;
+                                    } else {
+                                        self.send(Event::Error((UserRequest::CreateRoom, e))).await;
+
+                                        // We break here to prevent overloading the server, if it returns Resource limits exceeded we try to wait for the throttle to stop a few times
+                                        break None;
+                                    }
                                 }
                                 _ => {}
                             }
@@ -465,6 +477,7 @@ pub fn join_users_to_room(
     friendship: Friendship,
     progress_bar: &ProgressBar,
     retry_attempts: usize,
+    room_creation_max_resource_wait_attempts: usize,
 ) -> impl futures::Future<Output = Option<(String, String)>> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
@@ -476,7 +489,13 @@ pub fn join_users_to_room(
         let first_user_id = first_user.id.localpart().to_string();
         let second_user_id = second_user.id.localpart().to_string();
 
-        let room_created = first_user.create_room(&friendship, retry_attempts).await;
+        let room_created = first_user
+            .create_room(
+                &friendship,
+                retry_attempts,
+                room_creation_max_resource_wait_attempts,
+            )
+            .await;
         if let Some(room_id) = room_created {
             first_user.join_room(&room_id).await;
             second_user.join_room(&room_id).await;
