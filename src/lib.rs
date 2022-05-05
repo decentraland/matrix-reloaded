@@ -138,7 +138,7 @@ impl State {
             if let Some(user) = user {
                 self.users.insert(user.id().localpart().to_string(), user);
             } else {
-                println!("couldn't login user");
+                log::info!("couldn't login user");
             }
         }
 
