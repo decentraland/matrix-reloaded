@@ -211,7 +211,7 @@ impl State {
                     second_user,
                     friendship.clone(),
                     &progress_bar,
-                    10,
+                    self.config.room_creation_retry_attempts,
                 ));
 
                 friendship
