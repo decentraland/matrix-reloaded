@@ -317,10 +317,7 @@ impl User<Synching> {
         retry_attempts: usize,
     ) -> Option<Box<RoomId>> {
         let client = self.client.lock().await;
-
-        let instant = Instant::now();
         let alias = friendship.local_part.to_string();
-        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias) });
 
         let mut i = 0;
 
@@ -335,6 +332,9 @@ impl User<Synching> {
 
             i += 1;
 
+            let instant = Instant::now();
+            let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias) });
+
             let response = client.create_room(request).await;
 
             match response {
@@ -347,21 +347,19 @@ impl User<Synching> {
                     break Some(response.room_id.clone());
                 }
                 Err(e) => {
-                    let error: HttpError = e;
-
                     log::error!("Failed to create room {}", e);
-                    self.send(Event::Error((UserRequest::CreateRoom, e))).await;
 
-                    if let Some(error_response) = error.uiaa_response() {
-                        if let Some(error_kind) = error_response.auth_error {
-                            match error_kind.kind {
+                    if let Some(error_response) = e.uiaa_response() {
+                        if let Some(error_kind) = &error_response.auth_error {
+                            match &error_kind.kind {
                                 ErrorKind::RoomInUse => {
+                                    self.send(Event::Error((UserRequest::CreateRoom, e))).await;
+
                                     break None;
                                 }
-                                ErrorKind::InvalidRoomState => {
-                                    break None;
-                                }
-                                ErrorKind::ResourceLimitExceeded { admin_contact } => {
+                                ErrorKind::ResourceLimitExceeded { admin_contact: _ } => {
+                                    self.send(Event::Error((UserRequest::CreateRoom, e))).await;
+
                                     // TODO! should we have some kind of thread sleep here?
                                     break None;
                                 }
@@ -369,6 +367,8 @@ impl User<Synching> {
                             }
                         }
                     }
+
+                    self.send(Event::Error((UserRequest::CreateRoom, e))).await;
                 }
             }
         }
