@@ -2,6 +2,7 @@
     "rust-analyzer.checkOnSave.command": "clippy",
     "cSpell.words": [
         "homeserver",
-        "localpart"
+        "localpart",
+        "uiaa"
     ],
 }
