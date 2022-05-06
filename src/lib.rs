@@ -98,6 +98,7 @@ impl State {
     }
 
     async fn init_users(&mut self, tx: Sender<Event>) {
+        let start = Instant::now();
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
         let server = &self.config.homeserver_url;
@@ -120,7 +121,7 @@ impl State {
             futures.push(sync_user(
                 server.clone(),
                 user_id.clone(),
-                &progress_bar,
+                progress_bar.clone(),
                 tx.clone(),
                 retry_attempts,
                 retry_enabled,
@@ -142,6 +143,7 @@ impl State {
             }
         }
 
+        log::info!("init users took {} seconds", start.elapsed().as_secs());
         progress_bar.finish_and_clear();
     }
 
@@ -164,7 +166,11 @@ impl State {
             })
             .collect::<Vec<_>>();
 
-        println!("Available friendships {}", available_friendships.len());
+        println!(
+            "Available friendships {}, creating new {} friendships",
+            available_friendships.len(),
+            amount_of_friendships - self.friendships.len()
+        );
 
         let progress_bar = create_progress_bar(
             "Init friendships".to_string(),
@@ -449,32 +455,29 @@ impl State {
     }
 }
 
-fn sync_user(
+async fn sync_user(
     server: String,
     id: String,
-    progress_bar: &ProgressBar,
+    progress_bar: ProgressBar,
     tx: Sender<Event>,
     retry_attempts: usize,
     retry_enabled: bool,
-) -> impl futures::Future<Output = Option<User<Synching>>> {
-    let progress_bar = progress_bar.clone();
-    async move {
-        for _ in 0..retry_attempts {
-            let user = User::<Registered>::new(&id, &server, retry_enabled, tx.clone()).await;
+) -> Option<User<Synching>> {
+    for _ in 0..retry_attempts {
+        let user = User::<Registered>::new(&id, &server, retry_enabled, tx.clone()).await;
 
-            if let Some(mut user) = user {
-                if let Some(user) = user.login().await {
-                    log::info!("User is now synching: {}", user.id());
-                    progress_bar.inc(1);
-                    return Some(user.sync().await);
-                }
+        if let Some(mut user) = user {
+            if let Some(user) = user.login().await {
+                log::info!("User is now synching: {}", user.id());
+                progress_bar.inc(1);
+                return Some(user.sync().await);
             }
         }
-
-        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
-        log::info!("Couldn't init a user");
-
-        progress_bar.inc(1);
-        None
     }
+
+    //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
+    log::info!("Couldn't init a user");
+
+    progress_bar.inc(1);
+    None
 }

@@ -45,13 +45,13 @@ pub struct Disconnected {
 }
 pub struct Registered;
 pub struct LoggedIn;
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Synching {
     rooms: Arc<Mutex<Vec<Box<RoomId>>>>,
     available_room_ids: Vec<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct User<State> {
     id: Box<UserId>,
     client: Arc<Mutex<Client>>,
@@ -366,9 +366,15 @@ impl User<Synching> {
 
             false
         }) {
-            self.state
-                .available_room_ids
-                .push(room.room_id().to_string());
+            let room_id = room.room_id();
+
+            self.state.rooms.lock().await.push(Box::from(room_id));
+            self.state.available_room_ids.push(room_id.to_string());
+        } else {
+            panic!(
+                "could not find room for friendship {}",
+                friendship.local_part
+            );
         }
     }
 
@@ -387,7 +393,7 @@ impl User<Synching> {
             .collect::<Vec<_>>();
 
         if rooms.is_empty() {
-            return;
+            panic!("no room for the current user to act {}", self.id());
         }
 
         let room_id = &rooms[rand::thread_rng().gen_range(0..rooms.len())];
