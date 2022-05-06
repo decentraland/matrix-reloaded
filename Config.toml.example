@@ -16,7 +16,7 @@ waiting_period = 30
 retry_request_config = false
 # User creation retry attempts (not related to retry_request_config)
 user_creation_retry_attempts = 5
-# Max throughput allowed for users registration
+# Max throughput allowed for users initialization (registration and sync)
 user_creation_throughput = 10
 # Max throughput allowed for room creation
 room_creation_throughput = 20
