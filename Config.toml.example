@@ -25,5 +25,5 @@ room_creation_throughput = 20
 # Update the client's homeserver URL with the discovery information present in the login response, if any.
 # In case of localhost, you probably want to set as false.
 respect_login_well_known = true
-# Count of useres to work with (create/erase)
+# Count of users to work with (create/erase)
 user_count = 3000
