@@ -58,8 +58,10 @@ pub struct Configuration {
     retry_request_config: bool,
     respect_login_well_known: bool,
     user_creation_retry_attempts: usize,
+    room_creation_retry_attempts: usize,
     user_creation_throughput: usize,
     room_creation_throughput: usize,
+    room_creation_max_resource_wait_attempts: usize,
 }
 
 pub struct State {
@@ -210,6 +212,8 @@ impl State {
                     second_user,
                     friendship.clone(),
                     &progress_bar,
+                    self.config.room_creation_retry_attempts,
+                    self.config.room_creation_max_resource_wait_attempts,
                 ));
 
                 friendship

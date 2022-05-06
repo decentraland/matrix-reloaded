@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 use strum::Display;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
+use tokio::time::sleep;
 
 const PASSWORD: &str = "asdfasdf";
 
@@ -310,27 +311,76 @@ impl User<Synching> {
         !self.state.available_room_ids.is_empty()
     }
 
-    pub async fn create_room(&mut self, friendship: &Friendship) -> Option<Box<RoomId>> {
+    pub async fn create_room(
+        &mut self,
+        friendship: &Friendship,
+        retry_attempts: usize,
+        max_resource_wait_attempts: usize,
+    ) -> Option<Box<RoomId>> {
         let client = self.client.lock().await;
-
-        let instant = Instant::now();
         let alias = friendship.local_part.to_string();
-        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias) });
-        let response = client.create_room(request).await;
 
-        match response {
-            Ok(ref response) => {
-                self.send(Event::RequestDuration((
-                    UserRequest::CreateRoom,
-                    instant.elapsed(),
-                )))
-                .await;
-                Some(response.room_id.clone())
+        let mut i = 0;
+        let mut max_resource_attempts = 0;
+
+        loop {
+            if i == retry_attempts {
+                log::warn!(
+                    "Creating room {} failed due to max retry attempts",
+                    friendship.local_part
+                );
+                break None;
             }
-            Err(e) => {
-                println!("Failed to create room {}", e);
-                self.send(Event::Error((UserRequest::CreateRoom, e))).await;
-                None
+
+            i += 1;
+
+            let instant = Instant::now();
+            let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias) });
+
+            let response = client.create_room(request).await;
+
+            match response {
+                Ok(ref response) => {
+                    self.send(Event::RequestDuration((
+                        UserRequest::CreateRoom,
+                        instant.elapsed(),
+                    )))
+                    .await;
+                    break Some(response.room_id.clone());
+                }
+                Err(e) => {
+                    log::error!("Failed to create room {}", e);
+
+                    if let Some(error_response) = e.uiaa_response() {
+                        if let Some(error_kind) = &error_response.auth_error {
+                            match &error_kind.kind {
+                                ErrorKind::RoomInUse => {
+                                    self.send(Event::Error((UserRequest::CreateRoom, e))).await;
+
+                                    // We break here because this is an unrecoverable error, this shouldn't happen since it means we're trying to create an already existent room
+                                    break None;
+                                }
+                                ErrorKind::ResourceLimitExceeded { admin_contact: _ } => {
+                                    max_resource_attempts += 1;
+
+                                    if max_resource_attempts < max_resource_wait_attempts {
+                                        let mut rng = rand::thread_rng();
+
+                                        sleep(Duration::from_secs(rng.gen_range(2..5))).await;
+                                    } else {
+                                        self.send(Event::Error((UserRequest::CreateRoom, e))).await;
+
+                                        // We break here to prevent overloading the server, if it returns Resource limits exceeded we try to wait for the throttle to stop a few times
+                                        break None;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    self.send(Event::Error((UserRequest::CreateRoom, e))).await;
+                }
             }
         }
     }
@@ -426,6 +476,8 @@ pub fn join_users_to_room(
     second_user: &User<Synching>,
     friendship: Friendship,
     progress_bar: &ProgressBar,
+    retry_attempts: usize,
+    room_creation_max_resource_wait_attempts: usize,
 ) -> impl futures::Future<Output = Option<(String, String)>> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
@@ -437,7 +489,13 @@ pub fn join_users_to_room(
         let first_user_id = first_user.id.localpart().to_string();
         let second_user_id = second_user.id.localpart().to_string();
 
-        let room_created = first_user.create_room(&friendship).await;
+        let room_created = first_user
+            .create_room(
+                &friendship,
+                retry_attempts,
+                room_creation_max_resource_wait_attempts,
+            )
+            .await;
         if let Some(room_id) = room_created {
             first_user.join_room(&room_id).await;
             second_user.join_room(&room_id).await;
@@ -517,8 +575,7 @@ async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client>
             Some(client_value)
         }
         Err(_) => {
-            println!("got request config error {}", client.err().unwrap());
-            log::info!("Failed to create client");
+            log::info!("Failed to create client {}", client.err().unwrap());
             None
         }
     }
