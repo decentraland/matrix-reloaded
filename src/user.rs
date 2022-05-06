@@ -378,6 +378,10 @@ impl User<Synching> {
         }
     }
 
+    /// # Panics
+    ///
+    /// - Panics if `rooms` or `available_room_ids` is empty or are disjoint
+    /// - Panics if client cannot get joined room for the selected `room_id`
     pub async fn act(&mut self) {
         let client = self.client.lock().await;
         let rooms = self.state.rooms.lock().await;
@@ -422,7 +426,7 @@ impl User<Synching> {
                 }
             }
         } else {
-            // TODO! check why this can be possible
+            panic!("cannot get joined room {}", room_id);
         }
     }
 }
