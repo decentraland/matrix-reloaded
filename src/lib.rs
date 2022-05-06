@@ -213,7 +213,7 @@ impl State {
                     friendship.clone(),
                     &progress_bar,
                     self.config.room_creation_retry_attempts,
-                    self.config.room_creation_max_resource_wait_attempts
+                    self.config.room_creation_max_resource_wait_attempts,
                 ));
 
                 friendship
