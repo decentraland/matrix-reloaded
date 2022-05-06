@@ -87,3 +87,35 @@ async fn create_users(config: Configuration) {
 async fn delete_users(_config: Configuration) {
     //TODO! Implement delete
 }
+
+#[cfg(test)]
+mod tests {
+    use config::Config;
+    use matrix_load_testing_tool::Configuration;
+
+    #[test]
+    fn validate_config_example() {
+        let config = Config::builder()
+            .add_source(config::File::with_name("Config.example"))
+            .set_override("homeserver_url", "home")
+            .unwrap()
+            .set_override("output_dir", "output")
+            .unwrap()
+            .set_override("create", true)
+            .unwrap()
+            .set_override("delete", false)
+            .unwrap()
+            .set_override("run", false)
+            .unwrap()
+            .set_override("user_count", 42)
+            .unwrap()
+            .set_override_option("users_filename", Some("users"))
+            .unwrap()
+            .build()
+            .expect("file must be present");
+
+        config
+            .try_deserialize::<Configuration>()
+            .expect("config must be deserializable");
+    }
+}

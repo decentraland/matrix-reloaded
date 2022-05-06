@@ -36,7 +36,7 @@ brew install michaeleisel/zld/zld
 
 ## Quick start
 
-1. First of all, copy the [`Config.toml.example`](Config.toml.example) file in the root directory of the project to `Config.toml`, this file will be ignored in the git repository.
+1. First of all, copy the [`Config.example.toml`](Config.example.toml) file in the root directory of the project to `Config.toml`, this file will be ignored in the git repository.
 
 1. Make sure users are available for the server you will be testing by checking the [`users.json`](users.json) file, or create them by running:
 
@@ -72,7 +72,7 @@ report:
   lost_messages: 0
 ```
 
-For more options and parameters to be configured please see `cargo run -- --help` and the [Config.toml.example](/Config.toml.example).
+For more options and parameters to be configured please see `cargo run -- --help` and the [Config.example.toml](/Config.example.toml).
 
 ## Contact me
 

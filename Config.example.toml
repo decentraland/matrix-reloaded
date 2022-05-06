@@ -19,7 +19,7 @@ user_creation_retry_attempts = 5
 # Room creation retry attempts (not related to retry_request_config)
 room_creation_retry_attempts = 5
 # Room creation retry attempts for the max resource error
-room_creation_max_resource_wait_attempts
+room_creation_max_resource_wait_attempts = 5
 # Max throughput allowed for users initialization (registration and sync)
 user_creation_throughput = 10
 # Max throughput allowed for room creation
