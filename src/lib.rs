@@ -384,6 +384,8 @@ impl State {
 
         println!("Execution id {}", &execution_id);
 
+        self.ensure_execution_directory(&execution_id);
+
         let (tx, rx) = mpsc::channel::<Event>(100);
         let metrics = Metrics::new(rx);
         for step in 1..=self.config.total_steps {
@@ -418,14 +420,14 @@ impl State {
         let original_execution_id = execution_id();
 
         let mut execution_id = original_execution_id.clone();
-        let mut reports_dir = compute_reports_dir(&self.config.output_dir, &execution_id);
+        let mut reports_dir = self.compute_reports_dir(&execution_id);
         let mut path = Path::new(&reports_dir);
         let mut i = 0;
 
         while path.exists() {
             i += 1;
             execution_id = format!("{}_{}", original_execution_id, i);
-            reports_dir = compute_reports_dir(&self.config.output_dir, &execution_id);
+            reports_dir = self.compute_reports_dir(&execution_id);
             path = Path::new(&reports_dir);
         }
 
@@ -451,19 +453,7 @@ impl State {
     }
 
     pub fn generate_report(&self, execution_id: &str, step: usize, report: MetricsReport) {
-        let result = create_dir_all(format!("{}/{}", self.config.output_dir, execution_id));
-        let output_dir = if result.is_err() {
-            println!(
-                "Couldn't ensure output folder, defaulting to 'output/{}'",
-                execution_id
-            );
-            create_dir_all(format!("output/{}", execution_id)).unwrap();
-            "output"
-        } else {
-            self.config.output_dir.as_ref()
-        };
-
-        let reports_dir = compute_reports_dir(output_dir, execution_id);
+        let reports_dir = self.compute_reports_dir(execution_id);
 
         let path = format!("{}/report_{}_{}.yaml", reports_dir, step, time_now());
         let buffer = File::create(&path).unwrap();
@@ -481,10 +471,25 @@ impl State {
         println!("Step report generated: {}\n", path);
         println!("{:#?}\n", report);
     }
-}
 
-pub fn compute_reports_dir(output_dir: &str, execution_id: &str) -> String {
-    format!("{}/{}", output_dir, execution_id)
+    ///
+    /// Ensures the existence of the output and execution directories and the capacity of the tool
+    /// to create files and write to both.
+    ///
+    /// # Panics
+    ///
+    /// If we are not able to create the directory for the current execution.
+    ///
+    pub fn ensure_execution_directory(&self, execution_id: &str) {
+        let directory = format!("{}/{}", self.config.output_dir, execution_id);
+
+        create_dir_all(directory.clone())
+            .unwrap_or_else(|_| panic!("could not create output directory {}", directory));
+    }
+
+    pub fn compute_reports_dir(&self, execution_id: &str) -> String {
+        format!("{}/{}", self.config.output_dir, execution_id)
+    }
 }
 
 async fn sync_user(
