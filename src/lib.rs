@@ -12,6 +12,7 @@ use users_state::save_users;
 
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File};
+use std::path::Path;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use text::create_progress_bar;
@@ -24,6 +25,7 @@ use users_state::load_users;
 use users_state::SavedUserState;
 
 use crate::events::Event;
+use crate::time::execution_id;
 use crate::user::Registered;
 
 mod events;
@@ -74,6 +76,7 @@ pub struct State {
 
 #[derive(serde::Serialize, Default, Debug)]
 struct Report {
+    execution_id: String,
     homeserver: String,
     step: usize,
     step_users: usize,
@@ -377,7 +380,9 @@ impl State {
             panic!("There are only {} available users to run the test on this server, but for this test {} users are needed, please create more and try again", self.available_users, desired_users);
         }
 
-        let execution_id = time_now();
+        let execution_id = self.compute_execution_id();
+
+        println!("Execution id {}", &execution_id);
 
         let (tx, rx) = mpsc::channel::<Event>(100);
         let metrics = Metrics::new(rx);
@@ -396,13 +401,35 @@ impl State {
 
             // generate report
             let report = handle.await.expect("read events loop should end correctly");
-            self.generate_report(execution_id, step, report);
+            self.generate_report(&execution_id, step, report);
 
             // print new line in between steps
             if step < self.config.total_steps {
                 println!();
             }
         }
+    }
+
+    ///
+    /// Generates a unique and human-readable execution id based on the local date and an optional
+    /// sequence number if the original directory already exists.
+    ///
+    fn compute_execution_id(&self) -> String {
+        let original_execution_id = execution_id();
+
+        let mut execution_id = original_execution_id.clone();
+        let mut reports_dir = compute_reports_dir(&self.config.output_dir, &execution_id);
+        let mut path = Path::new(&reports_dir);
+        let mut i = 0;
+
+        while path.exists() {
+            i += 1;
+            execution_id = format!("{}_{}", original_execution_id, i);
+            reports_dir = compute_reports_dir(&self.config.output_dir, &execution_id);
+            path = Path::new(&reports_dir);
+        }
+
+        execution_id
     }
 
     pub async fn create_users(&mut self) {
@@ -423,7 +450,7 @@ impl State {
         )
     }
 
-    pub fn generate_report(&self, execution_id: u128, step: usize, report: MetricsReport) {
+    pub fn generate_report(&self, execution_id: &str, step: usize, report: MetricsReport) {
         let result = create_dir_all(format!("{}/{}", self.config.output_dir, execution_id));
         let output_dir = if result.is_err() {
             println!(
@@ -436,16 +463,13 @@ impl State {
             self.config.output_dir.as_ref()
         };
 
-        let path = format!(
-            "{}/{}/report_{}_{}.yaml",
-            output_dir,
-            execution_id,
-            step,
-            time_now()
-        );
+        let reports_dir = compute_reports_dir(output_dir, execution_id);
+
+        let path = format!("{}/report_{}_{}.yaml", reports_dir, step, time_now());
         let buffer = File::create(&path).unwrap();
 
         let report = Report {
+            execution_id: execution_id.to_owned(),
             homeserver: self.config.homeserver_url.to_string(),
             step,
             step_users: self.users.len(),
@@ -457,6 +481,10 @@ impl State {
         println!("Step report generated: {}\n", path);
         println!("{:#?}\n", report);
     }
+}
+
+pub fn compute_reports_dir(output_dir: &str, execution_id: &str) -> String {
+    format!("{}/{}", output_dir, execution_id)
 }
 
 async fn sync_user(
