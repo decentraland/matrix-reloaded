@@ -407,6 +407,13 @@ impl User<Synching> {
         }
     }
 
+    ///
+    /// Looks up a room with alias matching the `friendship` given and adds it to the current `state` of the user.
+    ///
+    /// # Panics
+    ///
+    /// If the `room` for the friendship given cannot be found
+    ///
     pub async fn add_friendship(&mut self, friendship: &Friendship) {
         let client = self.client.lock().await.rooms();
         if let Some(room) = client.iter().find(|room| {
