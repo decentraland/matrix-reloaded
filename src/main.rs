@@ -1,8 +1,10 @@
-use std::error::Error;
-
 use clap::Parser;
 use config::Config;
 use matrix_load_testing_tool::{Configuration, State};
+
+mod errors;
+
+use errors::{Error, Result};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -43,11 +45,11 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
-    let config = parse_configuration("Config", args)?;
+    let config = parse_configuration("Config", args);
     match config {
         Ok(config) => {
             match config {
@@ -57,7 +59,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 _ => println!("One of create delete or run modes must be selected"),
             };
         }
-        Err(e) => {
+        Err(Error::ConfigError(e)) => {
+            println!("Couldn't parse config {}", e);
+        }
+        Err(Error::StdError(e)) => {
             println!("Couldn't parse config {}", e);
         }
     }
@@ -65,10 +70,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn parse_configuration(
-    file_name: &str,
-    args: Args,
-) -> Result<Result<Configuration, config::ConfigError>, Box<dyn Error>> {
+fn parse_configuration(file_name: &str, args: Args) -> Result<Configuration> {
     let config = Config::builder()
         .add_source(config::File::with_name(file_name))
         .set_override("homeserver_url", args.homeserver)?
@@ -82,7 +84,7 @@ fn parse_configuration(
 
     let config = config.try_deserialize::<Configuration>();
 
-    Ok(config)
+    config.map_err(|e| e.into())
 }
 
 async fn run_state(config: Configuration) {
@@ -104,7 +106,7 @@ mod tests {
     use crate::*;
 
     #[test]
-    fn validate_config_example() -> Result<(), Box<dyn std::error::Error>> {
+    fn validate_config_example() -> Result<()> {
         let args = Args {
             homeserver: "home".to_owned(),
             output_dir: "output".to_owned(),
@@ -115,9 +117,7 @@ mod tests {
             users_filename: "users".to_owned(),
         };
 
-        let config = parse_configuration("Config.example", args)?;
-
-        config.expect("config must be deserializable");
+        parse_configuration("Config.example", args)?;
 
         Ok(())
     }
