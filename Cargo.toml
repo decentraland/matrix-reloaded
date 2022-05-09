@@ -21,13 +21,15 @@ serde_yaml = "0.8.23"
 strum = {version = "0.21", features = ["derive"]}
 tokio = {version = "1", features = ["full", "time"]}
 tokio-context = "0.1.3"
-chrono = "0.4.19"
 
 [dependencies.matrix-sdk]
 git = "https://github.com/matrix-org/matrix-rust-sdk"
 rev = "35f598a"
 
+[dependencies.chrono]
+git = "https://github.com/chronotope/chrono"
+rev = "4333e39d13cd0781cc935e8363b43b4e46b71071"
+
 [lib]
 name = "matrix_load_testing_tool"
 path = "src/lib.rs"
-
