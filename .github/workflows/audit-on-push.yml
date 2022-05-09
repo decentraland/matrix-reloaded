@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
-      - uses: moliva/audit-check@v1
+      - uses: moliva/audit-check@v1.3.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           # FIXME - ignoring due to chrono possible segfaults - moliva - 2022/05/09
