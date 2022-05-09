@@ -30,4 +30,3 @@ rev = "35f598a"
 [lib]
 name = "matrix_load_testing_tool"
 path = "src/lib.rs"
-
