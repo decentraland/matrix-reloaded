@@ -373,7 +373,7 @@ impl State {
 
         let desired_users = self.config.users_per_step * self.config.total_steps;
 
-        if self.available_users < desired_users.try_into().unwrap() {
+        if (self.available_users as usize) < desired_users {
             panic!("There are only {} available users to run the test on this server, but for this test {} users are needed, please create more and try again", self.available_users, desired_users);
         }
 
@@ -382,7 +382,7 @@ impl State {
         let (tx, rx) = mpsc::channel::<Event>(100);
         let metrics = Metrics::new(rx);
         for step in 1..=self.config.total_steps {
-            println!("Running step {}", step);
+            println!("Running step {} of {}", step, self.config.total_steps);
 
             let handle = metrics.run();
 
