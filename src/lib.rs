@@ -100,6 +100,7 @@ impl State {
     }
 
     async fn init_users(&mut self, tx: Sender<Event>) {
+        let start = Instant::now();
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
         let server = &self.config.homeserver_url;
@@ -122,7 +123,7 @@ impl State {
             futures.push(sync_user(
                 server.clone(),
                 user_id.clone(),
-                &progress_bar,
+                progress_bar.clone(),
                 tx.clone(),
                 retry_attempts,
                 retry_enabled,
@@ -144,6 +145,7 @@ impl State {
             }
         }
 
+        log::info!("init users took {} seconds", start.elapsed().as_secs());
         progress_bar.finish_and_clear();
     }
 
@@ -166,7 +168,11 @@ impl State {
             })
             .collect::<Vec<_>>();
 
-        println!("Available friendships {}", available_friendships.len());
+        println!(
+            "Available friendships {}, creating new {} friendships",
+            available_friendships.len(),
+            amount_of_friendships - self.friendships.len()
+        );
 
         let progress_bar = create_progress_bar(
             "Init friendships".to_string(),
@@ -367,7 +373,7 @@ impl State {
 
         let desired_users = self.config.users_per_step * self.config.total_steps;
 
-        if self.available_users < desired_users.try_into().unwrap() {
+        if (self.available_users as usize) < desired_users {
             panic!("There are only {} available users to run the test on this server, but for this test {} users are needed, please create more and try again", self.available_users, desired_users);
         }
 
@@ -376,7 +382,7 @@ impl State {
         let (tx, rx) = mpsc::channel::<Event>(100);
         let metrics = Metrics::new(rx);
         for step in 1..=self.config.total_steps {
-            println!("Running step {}", step);
+            println!("Running step {} of {}", step, self.config.total_steps);
 
             let handle = metrics.run();
 
@@ -453,32 +459,29 @@ impl State {
     }
 }
 
-fn sync_user(
+async fn sync_user(
     server: String,
     id: String,
-    progress_bar: &ProgressBar,
+    progress_bar: ProgressBar,
     tx: Sender<Event>,
     retry_attempts: usize,
     retry_enabled: bool,
-) -> impl futures::Future<Output = Option<User<Synching>>> {
-    let progress_bar = progress_bar.clone();
-    async move {
-        for _ in 0..retry_attempts {
-            let user = User::<Registered>::new(&id, &server, retry_enabled, tx.clone()).await;
+) -> Option<User<Synching>> {
+    for _ in 0..retry_attempts {
+        let user = User::<Registered>::new(&id, &server, retry_enabled, tx.clone()).await;
 
-            if let Some(mut user) = user {
-                if let Some(user) = user.login().await {
-                    log::info!("User is now synching: {}", user.id());
-                    progress_bar.inc(1);
-                    return Some(user.sync().await);
-                }
+        if let Some(mut user) = user {
+            if let Some(user) = user.login().await {
+                log::info!("User is now synching: {}", user.id());
+                progress_bar.inc(1);
+                return Some(user.sync().await);
             }
         }
-
-        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
-        log::info!("Couldn't init a user");
-
-        progress_bar.inc(1);
-        None
     }
+
+    //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
+    log::info!("Couldn't init a user");
+
+    progress_bar.inc(1);
+    None
 }

@@ -1,0 +1,70 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'matrix_load_testing_tool'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=matrix-load-testing-tool"
+                ],
+                "filter": {
+                    "name": "matrix_load_testing_tool",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'matrix-load-testing-tool'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=matrix-load-testing-tool",
+                    "--package=matrix-load-testing-tool"
+                ],
+                "filter": {
+                    "name": "matrix-load-testing-tool",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+                "--run",
+                "--homeserver",
+                "http://localhost:8008",
+                "--users-filename",
+                "users.local.json"
+            ],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'matrix-load-testing-tool'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=matrix-load-testing-tool",
+                    "--package=matrix-load-testing-tool"
+                ],
+                "filter": {
+                    "name": "matrix-load-testing-tool",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
