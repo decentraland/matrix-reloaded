@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use clap::Parser;
 use config::Config;
 use matrix_load_testing_tool::{Configuration, State};
@@ -41,22 +43,11 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
 
     let args = Args::parse();
-    let config = Config::builder()
-        .add_source(config::File::with_name("Config"))
-        .set_override("homeserver_url", args.homeserver)?
-        .set_override("output_dir", args.output_dir)?
-        .set_override("create", args.create)?
-        .set_override("delete", args.delete)?
-        .set_override("run", args.run)?
-        .set_override("user_count", args.amount)?
-        .set_override_option("users_filename", Some(args.users_filename))?
-        .build()?;
-
-    let config = config.try_deserialize::<Configuration>();
+    let config = parse_configuration("Config", args)?;
     match config {
         Ok(config) => {
             match config {
@@ -72,6 +63,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+fn parse_configuration(
+    file_name: &str,
+    args: Args,
+) -> Result<Result<Configuration, config::ConfigError>, Box<dyn Error>> {
+    let config = Config::builder()
+        .add_source(config::File::with_name(file_name))
+        .set_override("homeserver_url", args.homeserver)?
+        .set_override("output_dir", args.output_dir)?
+        .set_override("create", args.create)?
+        .set_override("delete", args.delete)?
+        .set_override("run", args.run)?
+        .set_override("user_count", args.amount)?
+        .set_override_option("users_filename", Some(args.users_filename))?
+        .build()?;
+
+    let config = config.try_deserialize::<Configuration>();
+
+    Ok(config)
 }
 
 async fn run_state(config: Configuration) {
@@ -90,32 +101,24 @@ async fn delete_users(_config: Configuration) {
 
 #[cfg(test)]
 mod tests {
-    use config::Config;
-    use matrix_load_testing_tool::Configuration;
+    use crate::*;
 
     #[test]
-    fn validate_config_example() {
-        let config = Config::builder()
-            .add_source(config::File::with_name("Config.example"))
-            .set_override("homeserver_url", "home")
-            .unwrap()
-            .set_override("output_dir", "output")
-            .unwrap()
-            .set_override("create", true)
-            .unwrap()
-            .set_override("delete", false)
-            .unwrap()
-            .set_override("run", false)
-            .unwrap()
-            .set_override("user_count", 42)
-            .unwrap()
-            .set_override_option("users_filename", Some("users"))
-            .unwrap()
-            .build()
-            .expect("file must be present");
+    fn validate_config_example() -> Result<(), Box<dyn std::error::Error>> {
+        let args = Args {
+            homeserver: "home".to_owned(),
+            output_dir: "output".to_owned(),
+            create: true,
+            delete: false,
+            run: false,
+            amount: 42,
+            users_filename: "users".to_owned(),
+        };
 
-        config
-            .try_deserialize::<Configuration>()
-            .expect("config must be deserializable");
+        let config = parse_configuration("Config.example", args)?;
+
+        config.expect("config must be deserializable");
+
+        Ok(())
     }
 }
