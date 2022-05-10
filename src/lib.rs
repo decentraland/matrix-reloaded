@@ -254,10 +254,12 @@ impl State {
             let second_user = self.users.iter().choose(&mut rng).unwrap();
 
             if first_user.0 == second_user.0 {
+                // cannot be friends with themselves
                 continue;
             }
             let friendship = Friendship::from_users(first_user.1, second_user.1);
             if self.friendships.contains(&friendship) {
+                // friendship already exists
                 continue;
             }
 
