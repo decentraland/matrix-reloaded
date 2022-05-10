@@ -63,6 +63,12 @@ pub struct Configuration {
     user_creation_throughput: usize,
     room_creation_throughput: usize,
     room_creation_max_resource_wait_attempts: usize,
+    #[serde_as(as = "DurationSeconds<u64>")]
+    #[serde(rename = "backoff_min_secs")]
+    backoff_min: Duration,
+    #[serde_as(as = "DurationSeconds<u64>")]
+    #[serde(rename = "backoff_max_secs")]
+    backoff_max: Duration,
 }
 
 pub struct State {
@@ -99,6 +105,12 @@ impl State {
         let retry_enabled = self.config.retry_request_config;
         let retry_attempts = self.config.user_creation_retry_attempts;
 
+        let backoff = Backoff::new(
+            retry_attempts as u32,
+            self.config.backoff_min,
+            self.config.backoff_max,
+        );
+
         let progress_bar = create_progress_bar(
             "Init users".to_string(),
             (desired_users - actual_users).try_into().unwrap(),
@@ -117,7 +129,7 @@ impl State {
                 user_id.clone(),
                 progress_bar.clone(),
                 tx.clone(),
-                retry_attempts,
+                &backoff,
                 retry_enabled,
             ));
 
@@ -425,15 +437,14 @@ async fn sync_user(
     id: String,
     progress_bar: ProgressBar,
     tx: Sender<Event>,
-    retry_attempts: usize,
+    backoff: &Backoff,
     retry_enabled: bool,
 ) -> Option<User<Synching>> {
-    let retries = retry_attempts as u32;
-    let min = Duration::from_millis(100);
-    let max = Duration::from_secs(10);
-    let backoff = Backoff::new(retries, min, max);
+    let mut total_duration = Duration::from_micros(0);
 
-    for duration in &backoff {
+    for duration in backoff {
+        total_duration += duration;
+
         let user = User::<Registered>::new(&id, &server, retry_enabled, tx.clone()).await;
 
         if let Some(mut user) = user {
@@ -448,6 +459,9 @@ async fn sync_user(
         }
     }
 
-    log::error!("Couldn't init a user");
-    panic!("Couldn't init a user");
+    panic!(
+        "Couldn't init user {} after a duration of {}s",
+        &id,
+        total_duration.as_secs()
+    );
 }

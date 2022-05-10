@@ -20,6 +20,8 @@ use matrix_sdk::ruma::{
 };
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::Client;
+use matrix_sdk::ClientBuildError;
+use matrix_sdk::Error;
 use matrix_sdk::HttpError::UiaaError;
 use matrix_sdk::{
     config::SyncSettings,
@@ -228,6 +230,7 @@ impl User<Registered> {
             .await;
 
         log::info!("Login response: {:?}", response);
+
         match response {
             Ok(_) => {
                 self.send(Event::RequestDuration((
@@ -359,7 +362,7 @@ impl User<Synching> {
                                     // We break here because this is an unrecoverable error, this shouldn't happen since it means we're trying to create an already existent room
                                     break None;
                                 }
-                                ErrorKind::ResourceLimitExceeded { admin_contact: _ } => {
+                                ErrorKind::ResourceLimitExceeded { admin_contact } => {
                                     max_resource_attempts += 1;
 
                                     if max_resource_attempts < max_resource_wait_attempts {
@@ -563,7 +566,7 @@ fn get_homeserver_url(homeserver: &str, protocol: Option<&str>) -> (String, Stri
     }
 }
 
-async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client> {
+async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Result<Client, ClientBuildError> {
     let instant = Instant::now();
 
     let (_, homeserver) = get_homeserver_url(homeserver_url, None);
@@ -584,17 +587,15 @@ async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client>
         .build()
         .await;
 
-    match client {
-        Ok(client_value) => {
+    client
+        .map(|c| {
             log::info!("New client created {}", instant.elapsed().as_millis());
-
-            Some(client_value)
-        }
-        Err(_) => {
+            c
+        })
+        .map_err(|e| {
             log::info!("Failed to create client {}", client.err().unwrap());
-            None
-        }
-    }
+            e
+        })
 }
 
 struct UserParams {
