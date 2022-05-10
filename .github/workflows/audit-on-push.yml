@@ -3,14 +3,16 @@ name: Security audit
 on:
   push:
     paths:
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
 
 jobs:
   security_audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v1
-      - uses: actions-rs/audit-check@v1
+      - uses: moliva/audit-check@v1.3.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # FIXME - ignoring due to chrono possible segfaults - moliva - 2022/05/09
+          ignore: "RUSTSEC-2020-0159, RUSTSEC-2020-0071"

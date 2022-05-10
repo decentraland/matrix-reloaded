@@ -3,7 +3,7 @@ use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use metrics::{Metrics, MetricsReport};
+use metrics::Metrics;
 use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -11,11 +11,9 @@ use serde_with::DurationSeconds;
 use users_state::save_users;
 
 use std::collections::HashMap;
-use std::fs::{create_dir_all, File};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use text::create_progress_bar;
-use time::time_now;
 use tokio::sync::mpsc::{self, Sender};
 use tokio_context::task::TaskController;
 use user::join_users_to_room;
@@ -24,11 +22,13 @@ use users_state::load_users;
 use users_state::SavedUserState;
 
 use crate::events::Event;
+use crate::report::ReportManager;
 use crate::user::Registered;
 
 mod events;
 mod friendship;
 mod metrics;
+mod report;
 mod text;
 mod time;
 mod user;
@@ -70,15 +70,6 @@ pub struct State {
     users: HashMap<String, User<Synching>>,
     users_state: SavedUserState,
     available_users: i64,
-}
-
-#[derive(serde::Serialize, Default, Debug)]
-struct Report {
-    homeserver: String,
-    step: usize,
-    step_users: usize,
-    step_friendships: usize,
-    report: MetricsReport,
 }
 
 impl State {
@@ -263,10 +254,12 @@ impl State {
             let second_user = self.users.iter().choose(&mut rng).unwrap();
 
             if first_user.0 == second_user.0 {
+                // cannot be friends with themselves
                 continue;
             }
             let friendship = Friendship::from_users(first_user.1, second_user.1);
             if self.friendships.contains(&friendship) {
+                // friendship already exists
                 continue;
             }
 
@@ -377,7 +370,9 @@ impl State {
             panic!("There are only {} available users to run the test on this server, but for this test {} users are needed, please create more and try again", self.available_users, desired_users);
         }
 
-        let execution_id = time_now();
+        let report_manager = ReportManager::with_output_dir(self.config.output_dir.clone());
+
+        println!("Execution id {}", &report_manager.execution_id);
 
         let (tx, rx) = mpsc::channel::<Event>(100);
         let metrics = Metrics::new(rx);
@@ -396,7 +391,7 @@ impl State {
 
             // generate report
             let report = handle.await.expect("read events loop should end correctly");
-            self.generate_report(execution_id, step, report);
+            report_manager.generate_report(self, step, report);
 
             // print new line in between steps
             if step < self.config.total_steps {
@@ -421,41 +416,6 @@ impl State {
                 "without"
             }
         )
-    }
-
-    pub fn generate_report(&self, execution_id: u128, step: usize, report: MetricsReport) {
-        let result = create_dir_all(format!("{}/{}", self.config.output_dir, execution_id));
-        let output_dir = if result.is_err() {
-            println!(
-                "Couldn't ensure output folder, defaulting to 'output/{}'",
-                execution_id
-            );
-            create_dir_all(format!("output/{}", execution_id)).unwrap();
-            "output"
-        } else {
-            self.config.output_dir.as_ref()
-        };
-
-        let path = format!(
-            "{}/{}/report_{}_{}.yaml",
-            output_dir,
-            execution_id,
-            step,
-            time_now()
-        );
-        let buffer = File::create(&path).unwrap();
-
-        let report = Report {
-            homeserver: self.config.homeserver_url.to_string(),
-            step,
-            step_users: self.users.len(),
-            step_friendships: self.friendships.len(),
-            report,
-        };
-
-        serde_yaml::to_writer(buffer, &report).expect("Couldn't write report to file");
-        println!("Step report generated: {}\n", path);
-        println!("{:#?}\n", report);
     }
 }
 

@@ -18,15 +18,15 @@ struct Args {
     output_dir: String,
 
     /// Should run the test
-    #[clap(short, long)]
+    #[clap(long)]
     run: bool,
 
     /// Should users be created
-    #[clap(short, long, group = "user-abm")]
+    #[clap(long, group = "user-abm")]
     create: bool,
 
     /// Should users be deleted
-    #[clap(short, long, group = "user-abm")]
+    #[clap(long, group = "user-abm")]
     delete: bool,
 
     /// Mode to run the CLI, if left empty the test with messages will be run
@@ -42,6 +42,10 @@ struct Args {
         default_value = "30"
     )]
     amount: i64,
+
+    /// Config file name
+    #[clap(short, long, default_value = "Config")]
+    config: String,
 }
 
 #[tokio::main]
@@ -49,7 +53,7 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
-    let config = parse_configuration("Config", args);
+    let config = parse_configuration(args);
     match config {
         Ok(config) => {
             match config {
@@ -70,9 +74,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn parse_configuration(file_name: &str, args: Args) -> Result<Configuration> {
+fn parse_configuration(args: Args) -> Result<Configuration> {
     let config = Config::builder()
-        .add_source(config::File::with_name(file_name))
+        .add_source(config::File::with_name(&args.config))
         .set_override("homeserver_url", args.homeserver)?
         .set_override("output_dir", args.output_dir)?
         .set_override("create", args.create)?
@@ -108,6 +112,7 @@ mod tests {
     #[test]
     fn validate_config_example() -> Result<()> {
         let args = Args {
+            config: "Config.example".to_owned(),
             homeserver: "home".to_owned(),
             output_dir: "output".to_owned(),
             create: true,
@@ -117,7 +122,7 @@ mod tests {
             users_filename: "users".to_owned(),
         };
 
-        parse_configuration("Config.example", args)?;
+        parse_configuration(args)?;
 
         Ok(())
     }
