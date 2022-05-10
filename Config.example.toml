@@ -29,3 +29,7 @@ room_creation_throughput = 20
 respect_login_well_known = true
 # Count of users to work with (create/erase)
 user_count = 3000
+# Backoff min duration in seconds
+backoff_min_secs = 5
+# Backoff max duration in seconds
+backoff_max_secs = 20

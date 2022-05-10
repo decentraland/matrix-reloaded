@@ -21,7 +21,6 @@ use matrix_sdk::ruma::{
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::Client;
 use matrix_sdk::ClientBuildError;
-use matrix_sdk::Error;
 use matrix_sdk::HttpError::UiaaError;
 use matrix_sdk::{
     config::SyncSettings,
@@ -362,7 +361,7 @@ impl User<Synching> {
                                     // We break here because this is an unrecoverable error, this shouldn't happen since it means we're trying to create an already existent room
                                     break None;
                                 }
-                                ErrorKind::ResourceLimitExceeded { admin_contact } => {
+                                ErrorKind::ResourceLimitExceeded { admin_contact: _ } => {
                                     max_resource_attempts += 1;
 
                                     if max_resource_attempts < max_resource_wait_attempts {
@@ -593,7 +592,7 @@ async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Result<Client,
             c
         })
         .map_err(|e| {
-            log::info!("Failed to create client {}", client.err().unwrap());
+            log::info!("Failed to create client {}", &e);
             e
         })
 }
