@@ -245,7 +245,6 @@ impl User<Registered> {
                 })
             }
             Err(e) => {
-                log::error!("LOGIN ERROR {} {}", e, self.id.localpart());
                 if let matrix_sdk::Error::Http(e) = e {
                     self.send(Event::Error((UserRequest::Login, e))).await;
                 }

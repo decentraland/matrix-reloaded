@@ -1,3 +1,4 @@
+use exponential_backoff::Backoff;
 use friendship::{Friendship, FriendshipID};
 use futures::future::join_all;
 use futures::stream::iter;
@@ -427,21 +428,26 @@ async fn sync_user(
     retry_attempts: usize,
     retry_enabled: bool,
 ) -> Option<User<Synching>> {
-    for _ in 0..retry_attempts {
+    let retries = retry_attempts as u32;
+    let min = Duration::from_millis(100);
+    let max = Duration::from_secs(10);
+    let backoff = Backoff::new(retries, min, max);
+
+    for duration in &backoff {
         let user = User::<Registered>::new(&id, &server, retry_enabled, tx.clone()).await;
 
         if let Some(mut user) = user {
             if let Some(user) = user.login().await {
                 log::info!("User is now synching: {}", user.id());
                 progress_bar.inc(1);
+
                 return Some(user.sync().await);
+            } else {
+                tokio::time::sleep(duration).await;
             }
         }
     }
 
-    //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
-    log::info!("Couldn't init a user");
-
-    progress_bar.inc(1);
-    None
+    log::error!("Couldn't init a user");
+    panic!("Couldn't init a user");
 }
