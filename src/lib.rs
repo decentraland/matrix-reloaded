@@ -3,7 +3,7 @@ use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use metrics::{Metrics, MetricsReport};
+use metrics::Metrics;
 use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -11,12 +11,9 @@ use serde_with::DurationSeconds;
 use users_state::save_users;
 
 use std::collections::HashMap;
-use std::fs::{create_dir_all, File};
-use std::path::Path;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use text::create_progress_bar;
-use time::time_now;
 use tokio::sync::mpsc::{self, Sender};
 use tokio_context::task::TaskController;
 use user::join_users_to_room;
@@ -25,12 +22,13 @@ use users_state::load_users;
 use users_state::SavedUserState;
 
 use crate::events::Event;
-use crate::time::execution_id;
+use crate::report::ReportManager;
 use crate::user::Registered;
 
 mod events;
 mod friendship;
 mod metrics;
+mod report;
 mod text;
 mod time;
 mod user;
@@ -72,16 +70,6 @@ pub struct State {
     users: HashMap<String, User<Synching>>,
     users_state: SavedUserState,
     available_users: i64,
-}
-
-#[derive(serde::Serialize, Default, Debug)]
-struct Report {
-    execution_id: String,
-    homeserver: String,
-    step: usize,
-    step_users: usize,
-    step_friendships: usize,
-    report: MetricsReport,
 }
 
 impl State {
@@ -380,11 +368,9 @@ impl State {
             panic!("There are only {} available users to run the test on this server, but for this test {} users are needed, please create more and try again", self.available_users, desired_users);
         }
 
-        let execution_id = self.compute_execution_id();
+        let report_manager = ReportManager::with_output_dir(self.config.output_dir.clone());
 
-        println!("Execution id {}", &execution_id);
-
-        self.ensure_execution_directory(&execution_id);
+        println!("Execution id {}", &report_manager.execution_id);
 
         let (tx, rx) = mpsc::channel::<Event>(100);
         let metrics = Metrics::new(rx);
@@ -403,35 +389,13 @@ impl State {
 
             // generate report
             let report = handle.await.expect("read events loop should end correctly");
-            self.generate_report(&execution_id, step, report);
+            report_manager.generate_report(self, step, report);
 
             // print new line in between steps
             if step < self.config.total_steps {
                 println!();
             }
         }
-    }
-
-    ///
-    /// Generates a unique and human-readable execution id based on the local date and an optional
-    /// sequence number if the original directory already exists.
-    ///
-    fn compute_execution_id(&self) -> String {
-        let original_execution_id = execution_id();
-
-        let mut execution_id = original_execution_id.clone();
-        let mut reports_dir = self.compute_reports_dir(&execution_id);
-        let mut path = Path::new(&reports_dir);
-        let mut i = 0;
-
-        while path.exists() {
-            i += 1;
-            execution_id = format!("{}_{}", original_execution_id, i);
-            reports_dir = self.compute_reports_dir(&execution_id);
-            path = Path::new(&reports_dir);
-        }
-
-        execution_id
     }
 
     pub async fn create_users(&mut self) {
@@ -450,45 +414,6 @@ impl State {
                 "without"
             }
         )
-    }
-
-    pub fn generate_report(&self, execution_id: &str, step: usize, report: MetricsReport) {
-        let reports_dir = self.compute_reports_dir(execution_id);
-
-        let path = format!("{}/report_{}_{}.yaml", reports_dir, step, time_now());
-        let buffer = File::create(&path).unwrap();
-
-        let report = Report {
-            execution_id: execution_id.to_owned(),
-            homeserver: self.config.homeserver_url.to_string(),
-            step,
-            step_users: self.users.len(),
-            step_friendships: self.friendships.len(),
-            report,
-        };
-
-        serde_yaml::to_writer(buffer, &report).expect("Couldn't write report to file");
-        println!("Step report generated: {}\n", path);
-        println!("{:#?}\n", report);
-    }
-
-    ///
-    /// Ensures the existence of the output and execution directories and the capacity of the tool
-    /// to create files and write to both.
-    ///
-    /// # Panics
-    ///
-    /// If we are not able to create the directory for the current execution.
-    ///
-    pub fn ensure_execution_directory(&self, execution_id: &str) {
-        let directory = format!("{}/{}", self.config.output_dir, execution_id);
-
-        create_dir_all(directory.clone())
-            .unwrap_or_else(|_| panic!("could not create output directory {}", directory));
-    }
-
-    pub fn compute_reports_dir(&self, execution_id: &str) -> String {
-        format!("{}/{}", self.config.output_dir, execution_id)
     }
 }
 
