@@ -5,6 +5,16 @@ use crate::time::time_now;
 use crate::State;
 use crate::{metrics::MetricsReport, time::execution_id};
 
+#[derive(serde::Serialize, Default, Debug)]
+struct Report {
+    execution_id: String,
+    homeserver: String,
+    step: usize,
+    step_users: usize,
+    step_friendships: usize,
+    report: MetricsReport,
+}
+
 pub struct ReportManager {
     output_dir: String,
     pub execution_id: String,
@@ -80,14 +90,4 @@ impl ReportManager {
         create_dir_all(directory.clone())
             .unwrap_or_else(|_| panic!("could not create output directory {}", directory));
     }
-}
-
-#[derive(serde::Serialize, Default, Debug)]
-struct Report {
-    execution_id: String,
-    homeserver: String,
-    step: usize,
-    step_users: usize,
-    step_friendships: usize,
-    report: MetricsReport,
 }
