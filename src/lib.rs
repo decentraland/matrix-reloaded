@@ -1,29 +1,25 @@
-use friendship::{Friendship, FriendshipID};
+use exponential_backoff::Backoff;
 use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
-use indicatif::{ProgressBar, ProgressStyle};
-use metrics::Metrics;
+use indicatif::ProgressBar;
 use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DurationSeconds;
-use users_state::save_users;
-
 use std::collections::HashMap;
-use std::thread::sleep;
 use std::time::{Duration, Instant};
-use text::create_progress_bar;
 use tokio::sync::mpsc::{self, Sender};
+use tokio::time::sleep;
 use tokio_context::task::TaskController;
-use user::join_users_to_room;
-use user::{create_desired_users, Synching, User};
-use users_state::load_users;
-use users_state::SavedUserState;
 
-use crate::events::Event;
-use crate::report::ReportManager;
-use crate::user::Registered;
+use events::Event;
+use friendship::{Friendship, FriendshipID};
+use metrics::Metrics;
+use report::ReportManager;
+use text::{create_progress_bar, default_spinner, spin_for};
+use user::{create_desired_users, join_users_to_room, Registered, Retriable, Synching, User};
+use users_state::{load_users, save_users, SavedUserState};
 
 mod events;
 mod friendship;
@@ -62,6 +58,15 @@ pub struct Configuration {
     user_creation_throughput: usize,
     room_creation_throughput: usize,
     room_creation_max_resource_wait_attempts: usize,
+    #[serde_as(as = "DurationSeconds<u64>")]
+    #[serde(rename = "backoff_min_secs")]
+    backoff_min: Duration,
+    #[serde_as(as = "DurationSeconds<u64>")]
+    #[serde(rename = "backoff_max_secs")]
+    backoff_max: Duration,
+    #[serde_as(as = "DurationSeconds<u64>")]
+    #[serde(rename = "wait_between_steps_secs")]
+    wait_between_steps: Duration,
 }
 
 pub struct State {
@@ -104,6 +109,12 @@ impl State {
         );
         progress_bar.tick();
 
+        let backoff = Backoff::new(
+            retry_attempts as u32,
+            self.config.backoff_min,
+            self.config.backoff_max,
+        );
+
         let mut futures = vec![];
         let mut i = actual_users;
 
@@ -116,7 +127,7 @@ impl State {
                 user_id.clone(),
                 progress_bar.clone(),
                 tx.clone(),
-                retry_attempts,
+                &backoff,
                 retry_enabled,
             ));
 
@@ -309,7 +320,7 @@ impl State {
             // If elapsed time of the current iteration is less than tick duration, we wait until that time.
             let elapsed = loop_start.elapsed();
             if elapsed.le(&self.config.tick_duration) {
-                sleep(self.config.tick_duration - elapsed);
+                sleep(self.config.tick_duration - elapsed).await;
             }
             progress_bar.inc(1);
         }
@@ -330,13 +341,7 @@ impl State {
     }
 
     async fn waiting_period(&self, tx: Sender<Event>, metrics: &Metrics) {
-        let spinner = ProgressBar::new_spinner()
-            .with_style(
-                ProgressStyle::default_spinner()
-                    .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-                    .template("{prefix:.bold.dim} {spinner} {wide_msg}"),
-            )
-            .with_prefix("Tear down:");
+        let spinner = default_spinner().with_prefix("Tear down:");
 
         let waiting_time = Duration::from_secs(self.config.waiting_period as u64);
         let one_sec = Duration::from_secs(1);
@@ -345,15 +350,8 @@ impl State {
             if start.elapsed().ge(&waiting_time) {
                 break;
             }
-            let wait_one_sec = Instant::now();
             spinner.set_message("Waiting for messages...");
-            loop {
-                if wait_one_sec.elapsed().ge(&one_sec) {
-                    break;
-                }
-                sleep(Duration::from_millis(100));
-                spinner.inc(1);
-            }
+            spin_for(one_sec, &spinner).await;
 
             spinner.set_message("Checking all messages were received...");
         }
@@ -374,6 +372,11 @@ impl State {
 
         println!("Execution id {}", &report_manager.execution_id);
 
+        let spinner = default_spinner().with_message(format!(
+            "Waiting {}s between steps",
+            self.config.wait_between_steps.as_secs()
+        ));
+
         let (tx, rx) = mpsc::channel::<Event>(100);
         let metrics = Metrics::new(rx);
         for step in 1..=self.config.total_steps {
@@ -393,10 +396,8 @@ impl State {
             let report = handle.await.expect("read events loop should end correctly");
             report_manager.generate_report(self, step, report);
 
-            // print new line in between steps
-            if step < self.config.total_steps {
-                println!();
-            }
+            // wait in between steps
+            spin_for(self.config.wait_between_steps, &spinner).await;
         }
     }
 
@@ -424,24 +425,42 @@ async fn sync_user(
     id: String,
     progress_bar: ProgressBar,
     tx: Sender<Event>,
-    retry_attempts: usize,
+    backoff: &Backoff,
     retry_enabled: bool,
 ) -> Option<User<Synching>> {
-    for _ in 0..retry_attempts {
+    let mut total_duration = Duration::from_micros(0);
+
+    let mut error = None;
+
+    for duration in backoff {
+        total_duration += duration;
+
         let user = User::<Registered>::new(&id, &server, retry_enabled, tx.clone()).await;
 
         if let Some(mut user) = user {
-            if let Some(user) = user.login().await {
-                log::info!("User is now synching: {}", user.id());
-                progress_bar.inc(1);
-                return Some(user.sync().await);
+            match user.login().await {
+                Ok(user) => {
+                    log::info!("User is now synching: {}", user.id());
+                    progress_bar.inc(1);
+
+                    return Some(user.sync().await);
+                }
+                Err((retriable, e)) => {
+                    error = Some(e);
+                    if let Retriable::NonRetriable = retriable {
+                        // error is non retriable, breaking the retry loop
+                        break;
+                    }
+                    sleep(duration).await;
+                }
             }
         }
     }
 
-    //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
-    log::info!("Couldn't init a user");
-
-    progress_bar.inc(1);
-    None
+    panic!(
+        "Couldn't init user {} after a duration of {}s with error {}",
+        &id,
+        total_duration.as_secs(),
+        error.unwrap()
+    );
 }

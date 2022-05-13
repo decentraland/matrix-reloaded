@@ -1,8 +1,10 @@
 use std::borrow::Cow;
+use std::time::{Duration, Instant};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use lipsum::lipsum;
 use rand::Rng;
+use tokio::time::sleep;
 
 pub fn get_random_string() -> String {
     let random_number: usize = rand::thread_rng().gen_range(5..15);
@@ -19,4 +21,23 @@ pub fn create_progress_bar(text: impl Into<Cow<'static, str>>, size: u64) -> Pro
     progress_bar.set_prefix(text);
 
     progress_bar
+}
+
+pub fn default_spinner() -> ProgressBar {
+    ProgressBar::new_spinner().with_style(
+        ProgressStyle::default_spinner()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+            .template("{prefix:.bold.dim} {spinner} {wide_msg}"),
+    )
+}
+
+pub async fn spin_for(one_sec: Duration, spinner: &ProgressBar) {
+    let wait_one_sec = Instant::now();
+    loop {
+        if wait_one_sec.elapsed().ge(&one_sec) {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+        spinner.inc(1);
+    }
 }

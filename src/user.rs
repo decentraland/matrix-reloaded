@@ -20,6 +20,7 @@ use matrix_sdk::ruma::{
 };
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::Client;
+use matrix_sdk::ClientBuildError;
 use matrix_sdk::HttpError::UiaaError;
 use matrix_sdk::{
     config::SyncSettings,
@@ -156,6 +157,7 @@ impl User<Disconnected> {
                     instant.elapsed(),
                 )))
                 .await;
+
                 Some(User {
                     id: self.id.clone(),
                     client: self.client.clone(),
@@ -178,6 +180,7 @@ impl User<Disconnected> {
                         )
                         .await
                         .unwrap();
+
                         return Some(User {
                             id: user.id,
                             client: user.client,
@@ -218,7 +221,7 @@ impl User<Registered> {
         })
     }
 
-    pub async fn login(&mut self) -> Option<User<LoggedIn>> {
+    pub async fn login(&mut self) -> Result<User<LoggedIn>, (Retriable, String)> {
         let instant = Instant::now();
 
         let client = self.client.lock().await;
@@ -228,6 +231,7 @@ impl User<Registered> {
             .await;
 
         log::info!("Login response: {:?}", response);
+
         match response {
             Ok(_) => {
                 self.send(Event::RequestDuration((
@@ -236,7 +240,7 @@ impl User<Registered> {
                 )))
                 .await;
 
-                Some(User {
+                Ok(User {
                     id: self.id.clone(),
                     client: self.client.clone(),
                     tx: self.tx.clone(),
@@ -245,15 +249,27 @@ impl User<Registered> {
                 })
             }
             Err(e) => {
-                log::error!("LOGIN ERROR {} {}", e, self.id.localpart());
+                let e1 = format!("{:?}", e);
+                let mut retriable = Retriable::Retriable;
                 if let matrix_sdk::Error::Http(e) = e {
+                    use matrix_sdk::HttpError::ClientApi;
+                    if let ClientApi(Server(Known(e))) = &e {
+                        if e.status_code.is_client_error() {
+                            retriable = Retriable::NonRetriable;
+                        }
+                    }
                     self.send(Event::Error((UserRequest::Login, e))).await;
                 }
 
-                None
+                Err((retriable, e1))
             }
         }
     }
+}
+
+pub enum Retriable {
+    Retriable,
+    NonRetriable,
 }
 
 impl User<LoggedIn> {
@@ -564,7 +580,7 @@ fn get_homeserver_url(homeserver: &str, protocol: Option<&str>) -> (String, Stri
     }
 }
 
-async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client> {
+async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Result<Client, ClientBuildError> {
     let instant = Instant::now();
 
     let (_, homeserver) = get_homeserver_url(homeserver_url, None);
@@ -585,17 +601,15 @@ async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Option<Client>
         .build()
         .await;
 
-    match client {
-        Ok(client_value) => {
+    client
+        .map(|c| {
             log::info!("New client created {}", instant.elapsed().as_millis());
-
-            Some(client_value)
-        }
-        Err(_) => {
-            log::info!("Failed to create client {}", client.err().unwrap());
-            None
-        }
-    }
+            c
+        })
+        .map_err(|e| {
+            log::info!("Failed to create client {}", &e);
+            e
+        })
 }
 
 struct UserParams {
@@ -643,6 +657,10 @@ fn create_user(user_params: UserParams) -> impl futures::Future<Output = Option<
     }
 }
 
+///
+/// # Panics
+/// If user cannot be created (i.e. returning None)
+///
 pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     let users_to_create = config.user_count;
 
@@ -692,6 +710,8 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     while let Some(user) = buffered_iter.next().await {
         if let Some(user) = user {
             users.push(user);
+        } else {
+            panic!("could not create user");
         }
     }
 
