@@ -219,7 +219,7 @@ impl User<Registered> {
         })
     }
 
-    pub async fn login(&mut self) -> Option<User<LoggedIn>> {
+    pub async fn login(&mut self) -> Result<User<LoggedIn>, (Retriable, String)> {
         let instant = Instant::now();
 
         let client = self.client.lock().await;
@@ -238,7 +238,7 @@ impl User<Registered> {
                 )))
                 .await;
 
-                Some(User {
+                Ok(User {
                     id: self.id.clone(),
                     client: self.client.clone(),
                     tx: self.tx.clone(),
@@ -247,14 +247,27 @@ impl User<Registered> {
                 })
             }
             Err(e) => {
+                let e1 = format!("{:?}", e);
+                let mut retriable = Retriable::Retriable;
                 if let matrix_sdk::Error::Http(e) = e {
+                    use matrix_sdk::HttpError::ClientApi;
+                    if let ClientApi(Server(Known(e))) = &e {
+                        if e.status_code.is_client_error() {
+                            retriable = Retriable::NonRetriable;
+                        }
+                    }
                     self.send(Event::Error((UserRequest::Login, e))).await;
                 }
 
-                None
+                Err((retriable, e1))
             }
         }
     }
+}
+
+pub enum Retriable {
+    Retriable,
+    NonRetriable,
 }
 
 impl User<LoggedIn> {

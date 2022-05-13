@@ -9,10 +9,10 @@ use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DurationSeconds;
+use tokio::time::sleep;
 use users_state::save_users;
 
 use std::collections::HashMap;
-use std::thread::sleep;
 use std::time::{Duration, Instant};
 use text::create_progress_bar;
 use tokio::sync::mpsc::{self, Sender};
@@ -25,6 +25,7 @@ use users_state::SavedUserState;
 use crate::events::Event;
 use crate::report::ReportManager;
 use crate::user::Registered;
+use crate::user::Retriable;
 
 mod events;
 mod friendship;
@@ -105,17 +106,17 @@ impl State {
         let retry_enabled = self.config.retry_request_config;
         let retry_attempts = self.config.user_creation_retry_attempts;
 
-        let backoff = Backoff::new(
-            retry_attempts as u32,
-            self.config.backoff_min,
-            self.config.backoff_max,
-        );
-
         let progress_bar = create_progress_bar(
             "Init users".to_string(),
             (desired_users - actual_users).try_into().unwrap(),
         );
         progress_bar.tick();
+
+        let backoff = Backoff::new(
+            retry_attempts as u32,
+            self.config.backoff_min,
+            self.config.backoff_max,
+        );
 
         let mut futures = vec![];
         let mut i = actual_users;
@@ -322,7 +323,7 @@ impl State {
             // If elapsed time of the current iteration is less than tick duration, we wait until that time.
             let elapsed = loop_start.elapsed();
             if elapsed.le(&self.config.tick_duration) {
-                sleep(self.config.tick_duration - elapsed);
+                sleep(self.config.tick_duration - elapsed).await;
             }
             progress_bar.inc(1);
         }
@@ -364,7 +365,7 @@ impl State {
                 if wait_one_sec.elapsed().ge(&one_sec) {
                     break;
                 }
-                sleep(Duration::from_millis(100));
+                sleep(Duration::from_millis(100)).await;
                 spinner.inc(1);
             }
 
@@ -406,10 +407,8 @@ impl State {
             let report = handle.await.expect("read events loop should end correctly");
             report_manager.generate_report(self, step, report);
 
-            // print new line in between steps
-            if step < self.config.total_steps {
-                println!();
-            }
+            // wait in between steps
+            sleep(Duration::from_secs(5)).await;
         }
     }
 
@@ -442,26 +441,37 @@ async fn sync_user(
 ) -> Option<User<Synching>> {
     let mut total_duration = Duration::from_micros(0);
 
+    let mut error = None;
+
     for duration in backoff {
         total_duration += duration;
 
         let user = User::<Registered>::new(&id, &server, retry_enabled, tx.clone()).await;
 
         if let Some(mut user) = user {
-            if let Some(user) = user.login().await {
-                log::info!("User is now synching: {}", user.id());
-                progress_bar.inc(1);
+            match user.login().await {
+                Ok(user) => {
+                    log::info!("User is now synching: {}", user.id());
+                    progress_bar.inc(1);
 
-                return Some(user.sync().await);
-            } else {
-                tokio::time::sleep(duration).await;
+                    return Some(user.sync().await);
+                }
+                Err((retriable, e)) => {
+                    error = Some(e);
+                    if let Retriable::NonRetriable = retriable {
+                        // error is non retriable, breaking the retry loop
+                        break;
+                    }
+                    sleep(duration).await;
+                }
             }
         }
     }
 
     panic!(
-        "Couldn't init user {} after a duration of {}s",
+        "Couldn't init user {} after a duration of {}s with error {}",
         &id,
-        total_duration.as_secs()
+        total_duration.as_secs(),
+        error.unwrap()
     );
 }

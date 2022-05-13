@@ -74,6 +74,11 @@ impl ReportManager {
         serde_yaml::to_writer(buffer, &report).expect("Couldn't write report to file");
         println!("Step report generated: {}\n", path);
         println!("{:#?}\n", report);
+
+        // print new line in between steps
+        if step < state.config.total_steps {
+            println!();
+        }
     }
 
     ///
