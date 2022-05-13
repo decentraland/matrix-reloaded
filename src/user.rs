@@ -157,6 +157,7 @@ impl User<Disconnected> {
                     instant.elapsed(),
                 )))
                 .await;
+
                 Some(User {
                     id: self.id.clone(),
                     client: self.client.clone(),
@@ -179,6 +180,7 @@ impl User<Disconnected> {
                         )
                         .await
                         .unwrap();
+
                         return Some(User {
                             id: user.id,
                             client: user.client,
@@ -655,6 +657,10 @@ fn create_user(user_params: UserParams) -> impl futures::Future<Output = Option<
     }
 }
 
+///
+/// # Panics
+/// If user cannot be created (i.e. returning None)
+/// 
 pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     let users_to_create = config.user_count;
 
@@ -704,6 +710,8 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     while let Some(user) = buffered_iter.next().await {
         if let Some(user) = user {
             users.push(user);
+        } else {
+            panic!("could not create user");
         }
     }
 
