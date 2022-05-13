@@ -1,31 +1,25 @@
 use exponential_backoff::Backoff;
-use friendship::{Friendship, FriendshipID};
 use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
-use indicatif::{ProgressBar, ProgressStyle};
-use metrics::Metrics;
+use indicatif::ProgressBar;
 use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DurationSeconds;
-use tokio::time::sleep;
-use users_state::save_users;
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use text::create_progress_bar;
 use tokio::sync::mpsc::{self, Sender};
+use tokio::time::sleep;
 use tokio_context::task::TaskController;
-use user::join_users_to_room;
-use user::{create_desired_users, Synching, User};
-use users_state::load_users;
-use users_state::SavedUserState;
 
-use crate::events::Event;
-use crate::report::ReportManager;
-use crate::user::Registered;
-use crate::user::Retriable;
+use events::Event;
+use friendship::{Friendship, FriendshipID};
+use metrics::Metrics;
+use report::ReportManager;
+use text::{create_progress_bar, default_spinner, spin_for};
+use user::{create_desired_users, join_users_to_room, Registered, Retriable, Synching, User};
+use users_state::{load_users, save_users, SavedUserState};
 
 mod events;
 mod friendship;
@@ -347,13 +341,7 @@ impl State {
     }
 
     async fn waiting_period(&self, tx: Sender<Event>, metrics: &Metrics) {
-        let spinner = ProgressBar::new_spinner()
-            .with_style(
-                ProgressStyle::default_spinner()
-                    .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-                    .template("{prefix:.bold.dim} {spinner} {wide_msg}"),
-            )
-            .with_prefix("Tear down:");
+        let spinner = default_spinner().with_prefix("Tear down:");
 
         let waiting_time = Duration::from_secs(self.config.waiting_period as u64);
         let one_sec = Duration::from_secs(1);
@@ -362,15 +350,8 @@ impl State {
             if start.elapsed().ge(&waiting_time) {
                 break;
             }
-            let wait_one_sec = Instant::now();
             spinner.set_message("Waiting for messages...");
-            loop {
-                if wait_one_sec.elapsed().ge(&one_sec) {
-                    break;
-                }
-                sleep(Duration::from_millis(100)).await;
-                spinner.inc(1);
-            }
+            spin_for(one_sec, &spinner).await;
 
             spinner.set_message("Checking all messages were received...");
         }
@@ -390,6 +371,11 @@ impl State {
         let report_manager = ReportManager::with_output_dir(self.config.output_dir.clone());
 
         println!("Execution id {}", &report_manager.execution_id);
+
+        let spinner = default_spinner().with_message(format!(
+            "Waiting {}s between steps",
+            self.config.wait_between_steps.as_secs()
+        ));
 
         let (tx, rx) = mpsc::channel::<Event>(100);
         let metrics = Metrics::new(rx);
@@ -411,7 +397,7 @@ impl State {
             report_manager.generate_report(self, step, report);
 
             // wait in between steps
-            sleep(self.config.wait_between_steps).await;
+            spin_for(self.config.wait_between_steps, &spinner).await;
         }
     }
 
