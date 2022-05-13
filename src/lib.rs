@@ -70,6 +70,9 @@ pub struct Configuration {
     #[serde_as(as = "DurationSeconds<u64>")]
     #[serde(rename = "backoff_max_secs")]
     backoff_max: Duration,
+    #[serde_as(as = "DurationSeconds<u64>")]
+    #[serde(rename = "wait_between_steps_secs")]
+    wait_between_steps: Duration,
 }
 
 pub struct State {
@@ -408,7 +411,7 @@ impl State {
             report_manager.generate_report(self, step, report);
 
             // wait in between steps
-            sleep(Duration::from_secs(5)).await;
+            sleep(self.config.wait_between_steps).await;
         }
     }
 

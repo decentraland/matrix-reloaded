@@ -33,3 +33,5 @@ user_count = 3000
 backoff_min_secs = 5
 # Backoff max duration in seconds
 backoff_max_secs = 20
+# Wait between steps to let server finish commiting and cleaning up after acting
+wait_between_steps_secs = 20

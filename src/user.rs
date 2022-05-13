@@ -660,7 +660,7 @@ fn create_user(user_params: UserParams) -> impl futures::Future<Output = Option<
 ///
 /// # Panics
 /// If user cannot be created (i.e. returning None)
-/// 
+///
 pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     let users_to_create = config.user_count;
 
