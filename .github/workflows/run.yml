@@ -60,4 +60,5 @@ jobs:
           value: ${{ github.event.inputs.user_creation_throughput }}
       - uses: actions-rs/cargo@v1
         with:
-          command: run -- --homeserver ${{ github.event.inputs.homeserver }}
+          command: run
+          args: --release -- --homeserver ${{ github.event.inputs.homeserver }}
