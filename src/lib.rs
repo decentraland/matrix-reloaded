@@ -278,12 +278,9 @@ impl State {
         }
     }
 
-    async fn act(&mut self, tx: Sender<Event>) {
+    async fn act(&mut self, tx: Sender<Event>, users_to_act: usize) {
         let start = Instant::now();
 
-        let users_to_act =
-            ((self.users.len() as f64) * self.config.max_users_to_act_per_tick_ratio) as usize;
-        let users_to_act = std::cmp::min(self.users.len(), users_to_act);
         let progress_bar = create_progress_bar(
             "Running",
             (self.config.step_duration.as_secs_f64() / self.config.tick_duration.as_secs_f64())
@@ -329,6 +326,13 @@ impl State {
         tx.send(Event::AllMessagesSent)
             .await
             .expect("AllMessagesSent event");
+    }
+
+    fn compute_users_to_act(&mut self) -> usize {
+        let users_to_act =
+            ((self.users.len() as f64) * self.config.max_users_to_act_per_tick_ratio) as usize;
+
+        std::cmp::min(self.users.len(), users_to_act)
     }
 
     fn get_users_with_friendship(&self, users_to_act: usize) -> Vec<&User<Synching>> {
@@ -388,13 +392,15 @@ impl State {
             self.init_users(tx.clone()).await;
             self.init_friendships().await;
 
+            let users_to_act = self.compute_users_to_act();
+
             // step running
-            self.act(tx.clone()).await;
+            self.act(tx.clone(), users_to_act).await;
             self.waiting_period(tx.clone(), &metrics).await;
 
             // generate report
             let report = handle.await.expect("read events loop should end correctly");
-            report_manager.generate_report(self, step, report);
+            report_manager.generate_report(self, users_to_act, step, report);
 
             // wait in between steps
             spin_for(self.config.wait_between_steps, &spinner).await;
