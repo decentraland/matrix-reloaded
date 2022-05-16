@@ -10,7 +10,7 @@ on:
       total_steps:
         description: "Total steps"
         required: true
-        default: "10"
+        default: "50"
       users_per_step:
         description: "Users per step"
         required: true
@@ -61,4 +61,4 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: run
-          args: --release -- --homeserver ${{ github.event.inputs.homeserver }}
+          args: --release -- --run --homeserver ${{ github.event.inputs.homeserver }}
