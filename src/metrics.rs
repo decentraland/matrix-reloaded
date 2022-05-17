@@ -47,7 +47,7 @@ impl MetricsReport {
     fn from(
         http_errors: &[(UserRequest, HttpError)],
         request_times: &[(UserRequest, Duration)],
-        messages: &HashMap<String, MessageTimes>,
+        messages: HashMap<String, MessageTimes>,
     ) -> Self {
         let mut http_errors_per_request = calculate_http_errors_per_request(http_errors);
         let mut requests_average_time = calculate_requests_average_time(request_times);
@@ -137,7 +137,7 @@ async fn read_events(
                         finishing_phase = true;
                     }
                     Event::Finish => {
-                        break MetricsReport::from(&http_errors, &request_times, &messages)
+                        break MetricsReport::from(&http_errors, &request_times, messages)
                     }
                 }
             }
@@ -246,7 +246,7 @@ fn calculate_http_errors_per_request(
 }
 
 fn classify_messages(
-    messages: &HashMap<String, MessageTimes>,
+    messages: HashMap<String, MessageTimes>,
 ) -> (
     HashMap<String, MessageTimes>,
     HashMap<String, MessageTimes>,
@@ -255,7 +255,7 @@ fn classify_messages(
 ) {
     let mut messages_not_received = HashMap::<String, MessageTimes>::new();
     let mut messages_not_sent = HashMap::<String, MessageTimes>::new();
-    let mut messages = HashMap::<String, MessageTimes>::new();
+    let mut messages_sent_and_received = HashMap::<String, MessageTimes>::new();
     let mut other_messages = HashMap::<String, MessageTimes>::new();
 
     for (id, times) in messages {
@@ -265,7 +265,7 @@ fn classify_messages(
         match (sent, received) {
             (true, false) => messages_not_received.insert(id, times),
             (false, true) => messages_not_sent.insert(id, times),
-            (true, true) => messages.insert(id, times),
+            (true, true) => messages_sent_and_received.insert(id, times),
             (false, false) => other_messages.insert(id, times),
         };
     }
@@ -273,7 +273,7 @@ fn classify_messages(
     (
         messages_not_received,
         messages_not_sent,
-        messages,
+        messages_sent_and_received,
         other_messages,
     )
 }
