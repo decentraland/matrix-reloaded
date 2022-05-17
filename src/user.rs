@@ -1,9 +1,9 @@
 use crate::events::Event;
 use crate::friendship::Friendship;
 use crate::text::create_progress_bar;
-use crate::text::get_random_string;
 use crate::users_state::{load_users, save_users, SavedUserState};
 use crate::Configuration;
+
 use futures::StreamExt;
 use indicatif::ProgressBar;
 use matrix_sdk::config::RequestConfig;
@@ -455,7 +455,7 @@ impl User<Synching> {
     ///
     /// - Panics if `rooms` or `available_room_ids` is empty or are disjoint
     /// - Panics if client cannot get joined room for the selected `room_id`
-    pub async fn act(&mut self) {
+    pub async fn act(&mut self, message: String) {
         let client = self.client.lock().await;
         let rooms = self.state.rooms.lock().await;
 
@@ -474,9 +474,8 @@ impl User<Synching> {
         }
 
         let room_id = &rooms[rand::thread_rng().gen_range(0..rooms.len())];
-        let content = AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(
-            get_random_string(),
-        ));
+        let content =
+            AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(message));
         let instant = Instant::now();
 
         if let Some(room) = client.get_joined_room(room_id) {

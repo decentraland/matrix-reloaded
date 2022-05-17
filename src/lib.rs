@@ -9,6 +9,7 @@ use serde_with::serde_as;
 use serde_with::DurationSeconds;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use text::get_random_string;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::sleep;
 use tokio_context::task::TaskController;
@@ -278,7 +279,7 @@ impl State {
         }
     }
 
-    async fn act(&mut self, tx: Sender<Event>) {
+    async fn act(&mut self, tx: Sender<Event>, step: usize) {
         let start = Instant::now();
 
         let users_to_act =
@@ -309,7 +310,8 @@ impl State {
                 handles.push(controller.spawn({
                     let mut user = user.clone();
                     async move {
-                        user.act().await;
+                        let message = format!("step {} - {}", step, get_random_string());
+                        user.act(message).await;
                     }
                 }));
             }
@@ -389,7 +391,7 @@ impl State {
             self.init_friendships().await;
 
             // step running
-            self.act(tx.clone()).await;
+            self.act(tx.clone(), step).await;
             self.waiting_period(tx.clone(), &metrics).await;
 
             // generate report
