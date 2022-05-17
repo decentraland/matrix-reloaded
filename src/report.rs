@@ -12,6 +12,7 @@ struct Report {
     step: usize,
     step_users: usize,
     users_to_act: usize,
+    actual_users_acted: usize,
     step_friendships: usize,
     report: MetricsReport,
 }
@@ -61,6 +62,7 @@ impl ReportManager {
         &self,
         state: &State,
         users_to_act: usize,
+        actual_users_acted: usize,
         step: usize,
         report: MetricsReport,
     ) {
@@ -74,6 +76,7 @@ impl ReportManager {
             homeserver: state.config.homeserver_url.to_string(),
             step,
             users_to_act,
+            actual_users_acted,
             step_users: state.users.len(),
             step_friendships: state.friendships.len(),
             report,

@@ -278,7 +278,7 @@ impl State {
         }
     }
 
-    async fn act(&mut self, tx: Sender<Event>, users_to_act: usize) {
+    async fn act(&mut self, tx: Sender<Event>, users_to_act: usize) -> usize {
         let start = Instant::now();
 
         let progress_bar = create_progress_bar(
@@ -288,6 +288,8 @@ impl State {
         );
 
         progress_bar.tick();
+
+        let users_list = self.get_users_with_friendship(users_to_act);
 
         loop {
             if start.elapsed().ge(&self.config.step_duration) {
@@ -299,9 +301,8 @@ impl State {
             let mut controller = TaskController::with_timeout(self.config.tick_duration);
 
             let mut handles = vec![];
-            let users_list = self.get_users_with_friendship(users_to_act);
 
-            for user in users_list {
+            for user in users_list.clone() {
                 // Every spawn result in a tokio::select! with the future and the timeout
                 handles.push(controller.spawn({
                     let mut user = user.clone();
@@ -326,6 +327,8 @@ impl State {
         tx.send(Event::AllMessagesSent)
             .await
             .expect("AllMessagesSent event");
+
+        users_list.len()
     }
 
     fn compute_users_to_act(&mut self) -> usize {
@@ -395,12 +398,12 @@ impl State {
             let users_to_act = self.compute_users_to_act();
 
             // step running
-            self.act(tx.clone(), users_to_act).await;
+            let actual_users_acted = self.act(tx.clone(), users_to_act).await;
             self.waiting_period(tx.clone(), &metrics).await;
 
             // generate report
             let report = handle.await.expect("read events loop should end correctly");
-            report_manager.generate_report(self, users_to_act, step, report);
+            report_manager.generate_report(self, users_to_act, actual_users_acted, step, report);
 
             // wait in between steps
             spin_for(self.config.wait_between_steps, &spinner).await;
