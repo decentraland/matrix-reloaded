@@ -9,6 +9,7 @@ use serde_with::serde_as;
 use serde_with::DurationSeconds;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use text::get_random_string;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::sleep;
 use tokio_context::task::TaskController;
@@ -278,7 +279,7 @@ impl State {
         }
     }
 
-    async fn act(&mut self, tx: Sender<Event>, users_to_act: usize) -> usize {
+    async fn act(&mut self, tx: Sender<Event>, step: usize, users_to_act: usize) -> usize {
         let start = Instant::now();
 
         let progress_bar = create_progress_bar(
@@ -307,7 +308,8 @@ impl State {
                 handles.push(controller.spawn({
                     let mut user = user.clone();
                     async move {
-                        user.act().await;
+                        let message = format!("step {} - {}", step, get_random_string());
+                        user.act(message).await;
                     }
                 }));
             }
@@ -398,7 +400,7 @@ impl State {
             let users_to_act = self.compute_users_to_act();
 
             // step running
-            let actual_users_acted = self.act(tx.clone(), users_to_act).await;
+            let actual_users_acted = self.act(tx.clone(), step, users_to_act).await;
             self.waiting_period(tx.clone(), &metrics).await;
 
             // generate report
