@@ -118,15 +118,9 @@ async fn read_events(
                         http_errors.push(e);
                     }
                     Event::MessageSent(message_id) => {
-                        if messages.contains_key(&message_id) {
-                            panic!("message sent is already present {}", message_id);
-                        }
                         messages.entry(message_id).or_default().sent = Some(Instant::now());
                     }
                     Event::MessageReceived(message_id) => {
-                        if !messages.contains_key(&message_id) {
-                            panic!("message received not present {}", message_id);
-                        }
                         messages.entry(message_id).or_default().received = Some(Instant::now());
                         if finishing_phase {
                             check_and_swap_all_messages_received(&messages, &all_messages_received);
