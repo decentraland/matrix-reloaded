@@ -280,8 +280,6 @@ impl State {
     }
 
     async fn act(&mut self, tx: Sender<Event>, step: usize, users_to_act: usize) -> usize {
-        let start = Instant::now();
-
         let progress_bar = create_progress_bar(
             "Running",
             (self.config.step_duration.as_secs_f64() / self.config.tick_duration.as_secs_f64())
@@ -291,6 +289,8 @@ impl State {
         progress_bar.tick();
 
         let users_list = self.get_users_with_friendship(users_to_act);
+
+        let start = Instant::now();
 
         loop {
             if start.elapsed().ge(&self.config.step_duration) {
