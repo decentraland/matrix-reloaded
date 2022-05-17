@@ -35,7 +35,11 @@ pub struct MetricsReport {
     #[serde_as(as = "HashMap<DisplayFromStr, _>")]
     http_errors_per_request: Vec<(String, usize)>,
     message_delivery_average_time: Option<u128>,
+    /// number of messages sent correctly
     messages_sent: usize,
+    /// number of messages received that do not match with sent
+    messages_not_sent: usize,
+    /// number of messages sent but not received
     lost_messages: usize,
 }
 
@@ -47,21 +51,26 @@ impl MetricsReport {
     ) -> Self {
         let mut http_errors_per_request = calculate_http_errors_per_request(http_errors);
         let mut requests_average_time = calculate_requests_average_time(request_times);
-        let message_delivery_average_time = calculate_message_delivery_average_time(messages);
 
-        requests_average_time.sort_unstable_by_key(|(_, time)| Reverse(*time));
-        http_errors_per_request.sort_unstable_by_key(|(_, count)| Reverse(*count));
-
-        let lost_messages = calculate_lost_messages(messages);
         let messages_sent = messages
             .iter()
             .filter(|(_, times)| times.sent.is_some())
             .count();
 
+        let (messages_not_received, messages_not_sent, messages, _) = classify_messages(messages);
+        let message_delivery_average_time = calculate_message_delivery_average_time(&messages);
+
+        requests_average_time.sort_unstable_by_key(|(_, time)| Reverse(*time));
+        http_errors_per_request.sort_unstable_by_key(|(_, count)| Reverse(*count));
+
+        let lost_messages = messages_not_received.len();
+        let messages_not_sent = messages_not_sent.len();
+
         Self {
             requests_average_time,
             http_errors_per_request,
             message_delivery_average_time,
+            messages_not_sent,
             messages_sent,
             lost_messages,
         }
@@ -234,4 +243,37 @@ fn calculate_http_errors_per_request(
             map
         },
     ))
+}
+
+fn classify_messages(
+    messages: &HashMap<String, MessageTimes>,
+) -> (
+    HashMap<String, MessageTimes>,
+    HashMap<String, MessageTimes>,
+    HashMap<String, MessageTimes>,
+    HashMap<String, MessageTimes>,
+) {
+    let mut messages_not_received = HashMap::<String, MessageTimes>::new();
+    let mut messages_not_sent = HashMap::<String, MessageTimes>::new();
+    let mut messages = HashMap::<String, MessageTimes>::new();
+    let mut other_messages = HashMap::<String, MessageTimes>::new();
+
+    for (id, times) in messages {
+        let received = times.received.is_some();
+        let sent = times.sent.is_some();
+
+        match (sent, received) {
+            (true, false) => messages_not_received.insert(id, times),
+            (false, true) => messages_not_sent.insert(id, times),
+            (true, true) => messages.insert(id, times),
+            (false, false) => other_messages.insert(id, times),
+        };
+    }
+
+    (
+        messages_not_received,
+        messages_not_sent,
+        messages,
+        other_messages,
+    )
 }
