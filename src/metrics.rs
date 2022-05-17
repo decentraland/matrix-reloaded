@@ -16,7 +16,6 @@ use std::{
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
 
-
 type MessagesClassification = (
     HashMap<String, MessageTimes>,
     HashMap<String, MessageTimes>,
