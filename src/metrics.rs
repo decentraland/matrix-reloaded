@@ -101,6 +101,11 @@ impl Metrics {
     }
 }
 
+///
+/// # Panics
+/// If message sent event is processed and the message_id is already present in the messages map
+/// If message received event is processed  and the message_id is not present in the messages map
+///
 async fn read_events(
     receiver: Arc<Mutex<Receiver<Event>>>,
     all_messages_received: Arc<AtomicBool>,

@@ -11,6 +11,8 @@ struct Report {
     homeserver: String,
     step: usize,
     step_users: usize,
+    users_to_act: usize,
+    actual_users_acted: usize,
     step_friendships: usize,
     report: MetricsReport,
 }
@@ -56,7 +58,14 @@ impl ReportManager {
         format!("{}/{}", output_dir, execution_id)
     }
 
-    pub fn generate_report(&self, state: &State, step: usize, report: MetricsReport) {
+    pub fn generate_report(
+        &self,
+        state: &State,
+        users_to_act: usize,
+        actual_users_acted: usize,
+        step: usize,
+        report: MetricsReport,
+    ) {
         let reports_dir = Self::compute_reports_dir(&self.output_dir, &self.execution_id);
 
         let path = format!("{}/report_{}_{}.yaml", reports_dir, step, time_now());
@@ -66,6 +75,8 @@ impl ReportManager {
             execution_id: self.execution_id.to_owned(),
             homeserver: state.config.homeserver_url.to_string(),
             step,
+            users_to_act,
+            actual_users_acted,
             step_users: state.users.len(),
             step_friendships: state.friendships.len(),
             report,
