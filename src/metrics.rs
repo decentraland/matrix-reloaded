@@ -16,6 +16,14 @@ use std::{
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
 
+
+type MessagesClassification = (
+    HashMap<String, MessageTimes>,
+    HashMap<String, MessageTimes>,
+    HashMap<String, MessageTimes>,
+    HashMap<String, MessageTimes>,
+);
+
 #[derive(Default)]
 struct MessageTimes {
     sent: Option<Instant>,
@@ -250,14 +258,7 @@ fn calculate_http_errors_per_request(
     ))
 }
 
-fn classify_messages(
-    messages: HashMap<String, MessageTimes>,
-) -> (
-    HashMap<String, MessageTimes>,
-    HashMap<String, MessageTimes>,
-    HashMap<String, MessageTimes>,
-    HashMap<String, MessageTimes>,
-) {
+fn classify_messages(messages: HashMap<String, MessageTimes>) -> MessagesClassification {
     let mut messages_not_received = HashMap::<String, MessageTimes>::new();
     let mut messages_not_sent = HashMap::<String, MessageTimes>::new();
     let mut messages_sent_and_received = HashMap::<String, MessageTimes>::new();
