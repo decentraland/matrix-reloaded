@@ -5,6 +5,7 @@ use std::time::Duration;
 #[derive(Debug)]
 pub enum Event {
     Error((UserRequest, HttpError)),
+    SendMessageCancelledError,
     MessageSent(String),
     MessageReceived(String),
     RequestDuration((UserRequest, Duration)),

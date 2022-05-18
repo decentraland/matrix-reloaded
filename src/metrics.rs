@@ -48,10 +48,13 @@ pub struct MetricsReport {
     messages_not_sent: usize,
     /// number of messages sent but not received
     lost_messages: usize,
+    /// number of send message errors that were cancelled in the middle of the process and could not be joined
+    send_message_cancelled_errors: u64,
 }
 
 impl MetricsReport {
     fn from(
+        send_message_cancelled_errors: u64,
         http_errors: &[(UserRequest, HttpError)],
         request_times: &[(UserRequest, Duration)],
         messages: HashMap<String, MessageTimes>,
@@ -80,6 +83,7 @@ impl MetricsReport {
             messages_not_sent,
             messages_sent,
             lost_messages,
+            send_message_cancelled_errors,
         }
     }
 
@@ -120,6 +124,7 @@ async fn read_events(
     let mut http_errors: Vec<(UserRequest, HttpError)> = vec![];
     let mut request_times: Vec<(UserRequest, Duration)> = vec![];
     let mut messages: HashMap<String, MessageTimes> = HashMap::new();
+    let mut send_message_cancelled_errors = 0;
 
     let mut finishing_phase = false;
 
@@ -132,6 +137,9 @@ async fn read_events(
                 match e {
                     Event::Error(e) => {
                         http_errors.push(e);
+                    }
+                    Event::SendMessageCancelledError => {
+                        send_message_cancelled_errors += 1;
                     }
                     Event::MessageSent(message_id) => {
                         messages.entry(message_id).or_default().sent = Some(Instant::now());
@@ -149,7 +157,12 @@ async fn read_events(
                         finishing_phase = true;
                     }
                     Event::Finish => {
-                        break MetricsReport::from(&http_errors, &request_times, messages)
+                        break MetricsReport::from(
+                            send_message_cancelled_errors,
+                            &http_errors,
+                            &request_times,
+                            messages,
+                        )
                     }
                 }
             }
