@@ -455,10 +455,53 @@ impl User<Synching> {
     ///
     /// - Panics if `rooms` or `available_room_ids` is empty or are disjoint
     /// - Panics if client cannot get joined room for the selected `room_id`
+    ///
     pub async fn act(&mut self, message: String) {
+        let room_id = self
+            .pick_room_id()
+            .await
+            .unwrap_or_else(|| panic!("no room for the current user to act {}", self.id()));
+
+        let content =
+            AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(message));
+
         let client = self.client.lock().await;
+
+        let instant = Instant::now();
+
+        let room = client
+            .get_joined_room(&room_id)
+            .unwrap_or_else(|| panic!("cannot get joined room {}", room_id));
+
+        let response = room.send(content, None).await;
+
+        use Event::*;
+
+        match response {
+            Ok(response) => {
+                self.send(RequestDuration((
+                    UserRequest::SendMessage,
+                    instant.elapsed(),
+                )))
+                .await;
+
+                self.send(MessageSent(response.event_id.to_string())).await;
+            }
+            Err(e) => {
+                if let matrix_sdk::Error::Http(e) = e {
+                    self.send(Error((UserRequest::SendMessage, e))).await;
+                }
+            }
+        }
+    }
+
+    ///
+    /// Picks a random room id between the ones available.
+    ///
+    async fn pick_room_id(&self) -> Option<Box<RoomId>> {
         let rooms = self.state.rooms.lock().await;
 
+        // filter rooms available to be use during the step
         let rooms = rooms
             .iter()
             .filter(|room| {
@@ -470,35 +513,11 @@ impl User<Synching> {
             .collect::<Vec<_>>();
 
         if rooms.is_empty() {
-            panic!("no room for the current user to act {}", self.id());
-        }
-
-        let room_id = &rooms[rand::thread_rng().gen_range(0..rooms.len())];
-        let content =
-            AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(message));
-        let instant = Instant::now();
-
-        if let Some(room) = client.get_joined_room(room_id) {
-            let response = room.send(content, None).await;
-            match response {
-                Ok(response) => {
-                    self.send(Event::RequestDuration((
-                        UserRequest::SendMessage,
-                        instant.elapsed(),
-                    )))
-                    .await;
-
-                    self.send(Event::MessageSent(response.event_id.to_string()))
-                        .await;
-                }
-                Err(e) => {
-                    if let matrix_sdk::Error::Http(e) = e {
-                        self.send(Event::Error((UserRequest::SendMessage, e))).await;
-                    }
-                }
-            }
+            None
         } else {
-            panic!("cannot get joined room {}", room_id);
+            // pick a random room between the available ones
+            let room_id = rooms[rand::thread_rng().gen_range(0..rooms.len())].clone();
+            Some(room_id)
         }
     }
 }
