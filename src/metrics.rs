@@ -48,10 +48,13 @@ pub struct MetricsReport {
     messages_not_sent: usize,
     /// number of messages sent but not received
     lost_messages: usize,
+    /// number of send message errors that were cancelled in the middle of the process and could not be joined
+    join_errors: u64,
 }
 
 impl MetricsReport {
     fn from(
+        join_errors: u64,
         http_errors: &[(UserRequest, HttpError)],
         request_times: &[(UserRequest, Duration)],
         messages: HashMap<String, MessageTimes>,
@@ -80,6 +83,7 @@ impl MetricsReport {
             messages_not_sent,
             messages_sent,
             lost_messages,
+            join_errors,
         }
     }
 
@@ -120,6 +124,7 @@ async fn read_events(
     let mut http_errors: Vec<(UserRequest, HttpError)> = vec![];
     let mut request_times: Vec<(UserRequest, Duration)> = vec![];
     let mut messages: HashMap<String, MessageTimes> = HashMap::new();
+    let mut join_errors = 0u64;
 
     let mut finishing_phase = false;
 
@@ -132,6 +137,9 @@ async fn read_events(
                 match e {
                     Event::Error(e) => {
                         http_errors.push(e);
+                    }
+                    Event::JoinError => {
+                        join_errors += 1;
                     }
                     Event::MessageSent(message_id) => {
                         messages.entry(message_id).or_default().sent = Some(Instant::now());
@@ -149,7 +157,12 @@ async fn read_events(
                         finishing_phase = true;
                     }
                     Event::Finish => {
-                        break MetricsReport::from(&http_errors, &request_times, messages)
+                        break MetricsReport::from(
+                            join_errors,
+                            &http_errors,
+                            &request_times,
+                            messages,
+                        )
                     }
                 }
             }

@@ -315,7 +315,15 @@ impl State {
             }
 
             // Timeout is contemplated in this join_all because of the controller spawning tasks.
-            join_all(handles).await;
+            let tasks = join_all(handles).await;
+
+            // Report errors for each task that could not complete
+            for task in tasks {
+                #[allow(unused_must_use)]
+                if task.is_err() {
+                    tx.send(Event::JoinError).await;
+                }
+            }
 
             // If elapsed time of the current iteration is less than tick duration, we wait until that time.
             let elapsed = loop_start.elapsed();
