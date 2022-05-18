@@ -124,7 +124,7 @@ async fn read_events(
     let mut http_errors: Vec<(UserRequest, HttpError)> = vec![];
     let mut request_times: Vec<(UserRequest, Duration)> = vec![];
     let mut messages: HashMap<String, MessageTimes> = HashMap::new();
-    let mut join_errors = 0u64;
+    let mut join_errors = 0;
 
     let mut finishing_phase = false;
 

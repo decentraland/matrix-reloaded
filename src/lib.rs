@@ -319,6 +319,7 @@ impl State {
 
             // Report errors for each task that could not complete
             for task in tasks {
+                // allow unused must use as the error is expected and will be counted and reported
                 #[allow(unused_must_use)]
                 if task.is_err() {
                     tx.send(Event::JoinError).await;
