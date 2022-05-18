@@ -27,6 +27,10 @@ on:
         description: "Step total duration"
         required: true
         default: "60"
+      waiting_period:
+        description: "Time to wait for all messages to be delivered, after that time they are considered as lost"
+        required: true
+        default: "60"
 
 env:
   CARGO_TERM_COLOR: always
@@ -78,6 +82,12 @@ jobs:
           file: "Config.toml"
           key: "step_duration_in_secs"
           value: ${{ github.event.inputs.step_duration_in_secs }}
+      - name: Set waiting_period
+        uses: ciiiii/toml-editor@1.0.0
+        with:
+          file: "Config.toml"
+          key: "waiting_period"
+          value: ${{ github.event.inputs.waiting_period }}
       - uses: actions-rs/cargo@v1
         with:
           command: run
