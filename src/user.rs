@@ -98,8 +98,7 @@ impl User<Disconnected> {
 
         let (homeserver_no_protocol, _) = get_homeserver_url(homeserver, None);
 
-        let client = get_client(homeserver, retry_enabled).await;
-
+        let client = get_client(homeserver, retry_enabled, respect_login_well_known).await;
         let user_id = UserId::parse(format!("@{id}:{homeserver_no_protocol}").as_str()).unwrap();
 
         Some(Self {
@@ -203,13 +202,13 @@ impl User<Registered> {
         id: &str,
         homeserver: &str,
         retry_enabled: bool,
+        respect_login_well_known: bool,
         tx: Sender<Event>,
     ) -> Option<User<Registered>> {
         // TODO: check which protocol we want to use: http or https (defaulting to https)
         let (homeserver_no_protocol, _) = get_homeserver_url(homeserver, None);
 
-        let client = get_client(homeserver, retry_enabled).await;
-
+        let client = get_client(homeserver, retry_enabled, respect_login_well_known).await;
         let user_id = UserId::parse(format!("@{id}:{homeserver_no_protocol}").as_str()).unwrap();
 
         Some(Self {
@@ -598,7 +597,7 @@ fn get_homeserver_url(homeserver: &str, protocol: Option<&str>) -> (String, Stri
     }
 }
 
-async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Result<Client, ClientBuildError> {
+async fn get_client(homeserver_url: &str, retry_enabled: bool, respect_login_well_known: bool) -> Result<Client, ClientBuildError> {
     let instant = Instant::now();
 
     let (_, homeserver) = get_homeserver_url(homeserver_url, None);
@@ -616,6 +615,7 @@ async fn get_client(homeserver_url: &str, retry_enabled: bool) -> Result<Client,
     let client = Client::builder()
         .request_config(request_config)
         .homeserver_url(homeserver)
+        .respect_login_well_known(respect_login_well_known)
         .build()
         .await;
 
@@ -693,7 +693,7 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
 
     let homeserver_url = config.homeserver_url.clone();
 
-    let client = get_client(&homeserver_url, config.retry_request_config)
+    let client = get_client(&homeserver_url, config.retry_request_config, config.respect_login_well_known)
         .await
         .unwrap();
 
@@ -772,6 +772,16 @@ mod tests {
     }
 
     #[test]
+    fn homeserver_arg_localhost_is_http() {
+        let homeserver_arg = "http://localhost";
+
+        assert_eq!(
+            ("localhost".to_string(), homeserver_arg.to_string()),
+            get_homeserver_url(homeserver_arg, None)
+        );
+    }
+
+    #[test]
     fn homeserver_arg_can_start_without_protocol() {
         let homeserver_arg = "matrix.domain.com";
         let expected_homeserver_url = "https://matrix.domain.com";
@@ -797,5 +807,17 @@ mod tests {
             ),
             get_homeserver_url(homeserver_arg, Some("http"))
         );
+    }
+
+    #[tokio::test]
+    async fn create_a_client_with_corresponding_homeserver() {
+        let client = get_client("http://localhost", false, false).await;
+        // assert_eq!(client.unwrap().homeserver().await.as_str(), "http://localhost/");
+    
+        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some("some-alias") });
+        if let Err (err) = client.unwrap().send(request, None).await {
+            println!("response {:?}", err);
+        }
+        
     }
 }
