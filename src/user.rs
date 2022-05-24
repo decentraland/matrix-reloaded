@@ -809,15 +809,4 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn create_a_client_with_corresponding_homeserver() {
-        let client = get_client("http://localhost", false, false).await;
-        // assert_eq!(client.unwrap().homeserver().await.as_str(), "http://localhost/");
-    
-        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some("some-alias") });
-        if let Err (err) = client.unwrap().send(request, None).await {
-            println!("response {:?}", err);
-        }
-        
-    }
 }
