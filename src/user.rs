@@ -275,6 +275,19 @@ pub enum Retriable {
 impl User<LoggedIn> {
     pub async fn sync(&self) -> User<Synching> {
         let client = self.client.lock().await;
+
+        let mut rooms = vec![];
+        // This sync once is used so that the client loads all the rooms that the user has once joined,
+        // this is because the get_joined_room will then run locally and avoid http requests
+        let response = client.sync_once(SyncSettings::default()).await;
+
+        if let Ok(res) = response {
+            for (room, _) in res.rooms.join {
+                rooms.push(room);
+            }
+        }
+
+        // Then we register an event handler to read new messages
         client
             .register_event_handler({
                 let tx = self.tx.clone();
@@ -296,18 +309,6 @@ impl User<LoggedIn> {
                 client.sync(SyncSettings::default()).await;
             }
         });
-
-        let mut rooms = vec![];
-
-        // This sync once is used so that the client loads all the rooms that the user has once joined,
-        // this is because the get_joined_room will then run locally and avoid http requests
-        let response = client.sync_once(SyncSettings::default()).await;
-
-        if let Ok(res) = response {
-            for (room, _) in res.rooms.join {
-                rooms.push(room);
-            }
-        }
 
         User {
             id: self.id.clone(),
