@@ -597,7 +597,11 @@ fn get_homeserver_url(homeserver: &str, protocol: Option<&str>) -> (String, Stri
     }
 }
 
-async fn get_client(homeserver_url: &str, retry_enabled: bool, respect_login_well_known: bool) -> Result<Client, ClientBuildError> {
+async fn get_client(
+    homeserver_url: &str,
+    retry_enabled: bool,
+    respect_login_well_known: bool,
+) -> Result<Client, ClientBuildError> {
     let instant = Instant::now();
 
     let (_, homeserver) = get_homeserver_url(homeserver_url, None);
@@ -693,9 +697,13 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
 
     let homeserver_url = config.homeserver_url.clone();
 
-    let client = get_client(&homeserver_url, config.retry_request_config, config.respect_login_well_known)
-        .await
-        .unwrap();
+    let client = get_client(
+        &homeserver_url,
+        config.retry_request_config,
+        config.respect_login_well_known,
+    )
+    .await
+    .unwrap();
 
     let current_users = servers_to_current_users.get_available_users(&homeserver_url);
 
@@ -808,5 +816,4 @@ mod tests {
             get_homeserver_url(homeserver_arg, Some("http"))
         );
     }
-
 }
