@@ -1,25 +1,25 @@
+use crate::user::create_desired_users;
+use events::Event;
 use exponential_backoff::Backoff;
+use friendship::{Friendship, FriendshipID};
 use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
 use indicatif::ProgressBar;
+use metrics::Metrics;
 use rand::prelude::IteratorRandom;
+use report::ReportManager;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DurationSeconds;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use text::get_random_string;
+use text::{create_progress_bar, default_spinner, spin_for};
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::sleep;
 use tokio_context::task::TaskController;
-
-use events::Event;
-use friendship::{Friendship, FriendshipID};
-use metrics::Metrics;
-use report::ReportManager;
-use text::{create_progress_bar, default_spinner, spin_for};
-use user::{create_desired_users, join_users_to_room, Registered, Retriable, Synching, User};
+use user::{join_users_to_room, Registered, Retriable, Synching, User};
 use users_state::{load_users, save_users, SavedUserState};
 
 mod events;
@@ -103,6 +103,7 @@ impl State {
         let server = &self.config.homeserver_url;
         let retry_enabled = self.config.retry_request_config;
         let retry_attempts = self.config.user_creation_retry_attempts;
+        let respect_login_well_known = self.config.respect_login_well_known;
 
         let progress_bar = create_progress_bar(
             "Init users".to_string(),
@@ -130,6 +131,7 @@ impl State {
                 tx.clone(),
                 &backoff,
                 retry_enabled,
+                respect_login_well_known,
             ));
 
             i += 1;
@@ -447,6 +449,7 @@ async fn sync_user(
     tx: Sender<Event>,
     backoff: &Backoff,
     retry_enabled: bool,
+    respect_login_well_known: bool,
 ) -> Option<User<Synching>> {
     let mut total_duration = Duration::from_micros(0);
 
@@ -455,7 +458,14 @@ async fn sync_user(
     for duration in backoff {
         total_duration += duration;
 
-        let user = User::<Registered>::new(&id, &server, retry_enabled, tx.clone()).await;
+        let user = User::<Registered>::new(
+            &id,
+            &server,
+            respect_login_well_known,
+            retry_enabled,
+            tx.clone(),
+        )
+        .await;
 
         if let Some(mut user) = user {
             match user.login().await {
