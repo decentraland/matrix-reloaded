@@ -18,8 +18,7 @@ use matrix_sdk::ruma::{
     },
     assign,
 };
-use matrix_sdk::ruma::{RoomId, UserId, OwnedUserId, OwnedRoomId};
-use matrix_sdk::{Client, RumaApiError};
+use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId, UserId};
 use matrix_sdk::ClientBuildError;
 use matrix_sdk::HttpError::UiaaError;
 use matrix_sdk::{
@@ -29,6 +28,7 @@ use matrix_sdk::{
         AnyMessageLikeEventContent,
     },
 };
+use matrix_sdk::{Client, RumaApiError};
 use rand::Rng;
 use regex::Regex;
 use serde::Serialize;
