@@ -1,6 +1,7 @@
 use crate::events::Event;
 use crate::user::UserRequest;
 use futures::lock::Mutex;
+use matrix_sdk::RumaApiError;
 use matrix_sdk::ruma::api::client::uiaa::UiaaResponse;
 use matrix_sdk::HttpError;
 use serde::Serialize;
@@ -185,7 +186,7 @@ fn check_and_swap_all_messages_received(
 fn get_error_code(e: &HttpError) -> String {
     use matrix_sdk::ruma::api::error::*;
     match e {
-        HttpError::ClientApi(FromHttpResponseError::Server(ServerError::Known(e))) => {
+        HttpError::Api(FromHttpResponseError::Server(ServerError::Known(RumaApiError::ClientApi(e)))) => {
             e.status_code.as_u16().to_string()
         }
         HttpError::Server(status_code) => status_code.as_u16().to_string(),
