@@ -22,6 +22,7 @@ use tokio_context::task::TaskController;
 use user::{join_users_to_room, Registered, Retriable, Synching, User};
 use users_state::{load_users, save_users, SavedUserState};
 
+mod client;
 mod events;
 mod friendship;
 mod metrics;
@@ -68,6 +69,8 @@ pub struct Configuration {
     #[serde_as(as = "DurationSeconds<u64>")]
     #[serde(rename = "wait_between_steps_secs")]
     wait_between_steps: Duration,
+    send_presence: bool,
+    update_account_data: bool,
 }
 
 pub struct State {
@@ -101,9 +104,7 @@ impl State {
         let actual_users = self.users.len();
         let desired_users = actual_users + self.config.users_per_step;
         let server = &self.config.homeserver_url;
-        let retry_enabled = self.config.retry_request_config;
         let retry_attempts = self.config.user_creation_retry_attempts;
-        let respect_login_well_known = self.config.respect_login_well_known;
 
         let progress_bar = create_progress_bar(
             "Init users".to_string(),
@@ -130,8 +131,7 @@ impl State {
                 progress_bar.clone(),
                 tx.clone(),
                 &backoff,
-                retry_enabled,
-                respect_login_well_known,
+                &self.config,
             ));
 
             i += 1;
@@ -225,6 +225,7 @@ impl State {
                     &progress_bar,
                     self.config.room_creation_retry_attempts,
                     self.config.room_creation_max_resource_wait_attempts,
+                    self.config.update_account_data,
                 ));
 
                 friendship
@@ -448,8 +449,7 @@ async fn sync_user(
     progress_bar: ProgressBar,
     tx: Sender<Event>,
     backoff: &Backoff,
-    retry_enabled: bool,
-    respect_login_well_known: bool,
+    config: &Configuration,
 ) -> Option<User<Synching>> {
     let mut total_duration = Duration::from_micros(0);
 
@@ -461,14 +461,14 @@ async fn sync_user(
         let user = User::<Registered>::new(
             &id,
             &server,
-            respect_login_well_known,
-            retry_enabled,
+            config.retry_request_config,
+            config.respect_login_well_known,
             tx.clone(),
         )
         .await;
 
         if let Some(mut user) = user {
-            match user.login().await {
+            match user.login(config.send_presence).await {
                 Ok(user) => {
                     log::info!("User is now synching: {}", user.id());
                     progress_bar.inc(1);

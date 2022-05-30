@@ -1,3 +1,4 @@
+use crate::client::ClientExt;
 use crate::events::Event;
 use crate::friendship::Friendship;
 use crate::text::create_progress_bar;
@@ -84,6 +85,7 @@ pub enum UserRequest {
     CreateRoom,
     JoinRoom,
     SendMessage,
+    UpdateAccountData,
 }
 
 impl User<Disconnected> {
@@ -220,18 +222,26 @@ impl User<Registered> {
         })
     }
 
-    pub async fn login(&mut self) -> Result<User<LoggedIn>, (Retriable, String)> {
+    pub async fn login(
+        &mut self,
+        send_presence: bool,
+    ) -> Result<User<LoggedIn>, (Retriable, String)> {
         let instant = Instant::now();
 
         let client = self.client.lock().await;
         log::info!("Attempt to login client with id {}", self.id());
-        let response = client
+        let login_response = client
             .login(self.id.localpart(), PASSWORD, None, None)
             .await;
 
-        log::info!("Login response: {:?}", response);
+        log::info!("Login response: {:?}", login_response);
 
-        match response {
+        if login_response.is_ok() && send_presence {
+            let response = client.send_presence(true).await;
+            log::info!("Presence response: {:?}", response);
+        }
+
+        match login_response {
             Ok(_) => {
                 self.send(Event::RequestDuration((
                     UserRequest::Login,
@@ -401,21 +411,50 @@ impl User<Synching> {
         }
     }
 
-    pub async fn join_room(&mut self, room_id: &RoomId) {
+    pub async fn join_room(
+        &mut self,
+        room_id: &RoomId,
+        friend_user_id: &UserId,
+        update_account_data: bool,
+    ) {
         let client = self.client.lock().await;
         let instant = Instant::now();
-        let response = client.join_room_by_id(room_id).await;
-        match response {
-            Ok(ref response) => {
+        let room_response = client.join_room_by_id(room_id).await;
+        match room_response {
+            Ok(ref room_response) => {
                 self.send(Event::RequestDuration((
                     UserRequest::JoinRoom,
                     instant.elapsed(),
                 )))
                 .await;
-                self.state.rooms.lock().await.push(response.room_id.clone());
+                self.state
+                    .rooms
+                    .lock()
+                    .await
+                    .push(room_response.room_id.clone());
                 self.state
                     .available_room_ids
-                    .push(response.room_id.to_string());
+                    .push(room_response.room_id.to_string());
+
+                // update account_data to set as direct conversation (m.direct)
+                if update_account_data {
+                    let instant = Instant::now();
+                    if let Err(e) = client
+                        .add_room_to_list(
+                            friend_user_id.to_owned(),
+                            room_response.room_id.to_owned(),
+                        )
+                        .await
+                    {
+                        self.send(Event::Error((UserRequest::UpdateAccountData, e)))
+                            .await
+                    };
+                    self.send(Event::RequestDuration((
+                        UserRequest::UpdateAccountData,
+                        instant.elapsed(),
+                    )))
+                    .await;
+                }
             }
             Err(e) => {
                 self.send(Event::Error((UserRequest::JoinRoom, e))).await;
@@ -529,6 +568,7 @@ pub fn join_users_to_room(
     progress_bar: &ProgressBar,
     retry_attempts: usize,
     room_creation_max_resource_wait_attempts: usize,
+    update_account_data: bool,
 ) -> impl futures::Future<Output = Option<(String, String)>> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
@@ -548,8 +588,12 @@ pub fn join_users_to_room(
             )
             .await;
         if let Some(room_id) = room_created {
-            first_user.join_room(&room_id).await;
-            second_user.join_room(&room_id).await;
+            first_user
+                .join_room(&room_id, second_user.id(), update_account_data)
+                .await;
+            second_user
+                .join_room(&room_id, first_user.id(), update_account_data)
+                .await;
 
             res = Some((first_user_id, second_user_id));
         } else {
