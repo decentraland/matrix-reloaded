@@ -161,8 +161,10 @@ impl State {
     }
 
     async fn init_friendships(&mut self) {
+        // clear friendships, start again.
+        self.friendships.clear();
+
         let amount_of_friendships = self.calculate_step_friendships();
-        println!("Running test for {} friendships", amount_of_friendships);
 
         let available_friendships = self
             .users_state
@@ -173,12 +175,6 @@ impl State {
             })
             .collect::<Vec<_>>();
 
-        println!(
-            "Available friendships {}, creating new {} friendships",
-            available_friendships.len(),
-            amount_of_friendships - self.friendships.len()
-        );
-
         let progress_bar = create_progress_bar(
             "Init friendships".to_string(),
             (amount_of_friendships - self.friendships.len())
@@ -187,67 +183,85 @@ impl State {
         );
         progress_bar.tick();
 
-        let mut futures = vec![];
+        // let mut futures = vec![];
+        let mut reusable_friendships = available_friendships
+            .iter()
+            .take(amount_of_friendships)
+            .collect::<Vec<_>>();
 
-        let mut used = 0;
+        // first we try to reuse all possible friendships
+        while let Some((user_1, user_2)) = reusable_friendships.pop() {
+            let first_user = self.users.get_mut(user_1).unwrap();
+            let homeserver = first_user.id().server_name().to_string();
 
-        // Here the code obtains the friendships to be used during the test.
-        // It first tries to reuse the previously created friendships, if there aren't more available
-        // it creates new ones.
-        // It's important to note that only creating new ones is async, otherwise it's just populating the friendships array
-        while self.friendships.len() < amount_of_friendships {
-            let friendship = if used < available_friendships.len() {
-                let &(user1, user2) = &available_friendships[used];
+            let friendship =
+                Friendship::from_ids(homeserver, user_1.to_string(), user_2.to_string());
 
-                let first_user = self.users.get_mut(user1).unwrap();
-                let homeserver = first_user.id().server_name().to_string();
+            if let Err(e) = first_user.add_friendship(&friendship).await {
+                // cannot use this friendship since user couldn't find a valid room
+                log::info!("Couldn't reuse friendship: {}", e);
+                continue;
+            }
 
-                let friendship =
-                    Friendship::from_ids(homeserver, user1.to_string(), user2.to_string());
-
-                first_user.add_friendship(&friendship).await;
-
-                let second_user = self.users.get_mut(user2).unwrap();
-                second_user.add_friendship(&friendship).await;
-
-                used += 1;
-                progress_bar.inc(1);
-
-                friendship
-            } else {
-                let (first_user, second_user) = self.get_random_friendship();
-                let friendship = Friendship::from_users(first_user, second_user);
-
-                futures.push(join_users_to_room(
-                    first_user,
-                    second_user,
-                    friendship.clone(),
-                    &progress_bar,
-                    self.config.room_creation_retry_attempts,
-                    self.config.room_creation_max_resource_wait_attempts,
-                    self.config.update_account_data,
-                ));
-
-                friendship
-            };
-
+            let second_user = self.users.get_mut(user_2).unwrap();
+            if let Err(e) = second_user.add_friendship(&friendship).await {
+                // cannot use this friendship since user couldn't find a valid room
+                log::info!("Couldn't reuse friendship: {}", e);
+                continue;
+            }
+            progress_bar.inc(1);
+            progress_bar.tick();
             self.friendships.push(friendship);
         }
 
+        let friendships_to_create = amount_of_friendships - self.friendships.len();
+
+        log::info!(
+            "Reused friendships {}, will try to create {} new friendships",
+            self.friendships.len(),
+            friendships_to_create
+        );
+
+        // create remaining friendships
+        let mut futures = vec![];
+        for _ in 0..amount_of_friendships - self.friendships.len() {
+            let (first_user, second_user) = self.get_random_friendship();
+            let friendship = Friendship::from_users(first_user, second_user);
+
+            futures.push(join_users_to_room(
+                first_user,
+                second_user,
+                friendship.clone(),
+                self.config.room_creation_retry_attempts,
+                self.config.room_creation_max_resource_wait_attempts,
+                self.config.update_account_data,
+            ));
+
+            log::info!("Creating friendship: {:?}", friendship);
+        }
         let stream_iter = iter(futures);
         let mut buffered_iter = stream_iter.buffer_unordered(self.config.room_creation_throughput);
 
         while let Some(res) = buffered_iter.next().await {
-            if let Some((user1, user2)) = res {
-                self.users_state.add_friendship(user1, user2)
+            if let Some((friendship, user1, user2)) = res {
+                // friendship created
+                progress_bar.inc(1);
+                self.users_state.add_friendship(user1, user2);
+                self.friendships.push(friendship);
+            } else {
+                log::info!("Friendship was not created :(");
             }
         }
 
+        let missing_friendships = amount_of_friendships - self.friendships.len();
+        if missing_friendships > 0 {
+            log::info!("Couldn't create {missing_friendships} friendships");
+        }
+
         self.friendships.sort();
-
         self.store_new_users_state();
-
         progress_bar.finish_and_clear();
+        println!("Running test for {} friendships", self.friendships.len());
     }
 
     fn store_new_users_state(&mut self) {
@@ -283,6 +297,11 @@ impl State {
     }
 
     async fn act(&mut self, tx: Sender<Event>, step: usize, users_to_act: usize) -> usize {
+        let users_list = self.get_users_with_friendship(users_to_act);
+        println!("Users to act {}", users_list.len());
+
+        let start = Instant::now();
+
         let progress_bar = create_progress_bar(
             "Running",
             (self.config.step_duration.as_secs_f64() / self.config.tick_duration.as_secs_f64())
@@ -290,11 +309,6 @@ impl State {
         );
 
         progress_bar.tick();
-
-        let users_list = self.get_users_with_friendship(users_to_act);
-
-        let start = Instant::now();
-
         loop {
             if start.elapsed().ge(&self.config.step_duration) {
                 // elapsed time for current step reached, breaking the loop and proceed to next step

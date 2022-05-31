@@ -86,6 +86,7 @@ pub enum UserRequest {
     JoinRoom,
     SendMessage,
     UpdateAccountData,
+    Presence,
 }
 
 impl User<Disconnected> {
@@ -226,37 +227,41 @@ impl User<Registered> {
         &mut self,
         send_presence: bool,
     ) -> Result<User<LoggedIn>, (Retriable, String)> {
-        let instant = Instant::now();
-
         let client = self.client.lock().await;
         log::info!("Attempt to login client with id {}", self.id());
+        let instant = Instant::now();
         let login_response = client
             .login(self.id.localpart(), PASSWORD, None, None)
             .await;
-
+        self.send(Event::RequestDuration((
+            UserRequest::Login,
+            instant.elapsed(),
+        )))
+        .await;
         log::info!("Login response: {:?}", login_response);
 
         if login_response.is_ok() && send_presence {
+            let instant = Instant::now();
             let response = client.send_presence(true).await;
+            self.send(Event::RequestDuration((
+                UserRequest::Presence,
+                instant.elapsed(),
+            )))
+            .await;
             log::info!("Presence response: {:?}", response);
+            if let Err(e) = response {
+                self.send(Event::Error((UserRequest::Presence, e))).await;
+            }
         }
 
         match login_response {
-            Ok(_) => {
-                self.send(Event::RequestDuration((
-                    UserRequest::Login,
-                    instant.elapsed(),
-                )))
-                .await;
-
-                Ok(User {
-                    id: self.id.clone(),
-                    client: self.client.clone(),
-                    tx: self.tx.clone(),
-                    state: LoggedIn {},
-                    friendships: self.friendships.clone(),
-                })
-            }
+            Ok(_) => Ok(User {
+                id: self.id.clone(),
+                client: self.client.clone(),
+                tx: self.tx.clone(),
+                state: LoggedIn {},
+                friendships: self.friendships.clone(),
+            }),
             Err(e) => {
                 let e1 = format!("{:?}", e);
                 let mut retriable = Retriable::Retriable;
@@ -416,17 +421,17 @@ impl User<Synching> {
         room_id: &RoomId,
         friend_user_id: &UserId,
         update_account_data: bool,
-    ) {
+    ) -> Result<(), String> {
         let client = self.client.lock().await;
         let instant = Instant::now();
         let room_response = client.join_room_by_id(room_id).await;
+        self.send(Event::RequestDuration((
+            UserRequest::JoinRoom,
+            instant.elapsed(),
+        )))
+        .await;
         match room_response {
             Ok(ref room_response) => {
-                self.send(Event::RequestDuration((
-                    UserRequest::JoinRoom,
-                    instant.elapsed(),
-                )))
-                .await;
                 self.state
                     .rooms
                     .lock()
@@ -455,9 +460,11 @@ impl User<Synching> {
                     )))
                     .await;
                 }
+                Ok(())
             }
             Err(e) => {
                 self.send(Event::Error((UserRequest::JoinRoom, e))).await;
+                Err("Failed to join room!".to_string())
             }
         }
     }
@@ -469,7 +476,7 @@ impl User<Synching> {
     ///
     /// If the `room` for the friendship given cannot be found
     ///
-    pub async fn add_friendship(&mut self, friendship: &Friendship) {
+    pub async fn add_friendship(&mut self, friendship: &Friendship) -> Result<(), String> {
         let client = self.client.lock().await.rooms();
         if let Some(room) = client.iter().find(|room| {
             if let Some(alias) = room.canonical_alias() {
@@ -482,12 +489,12 @@ impl User<Synching> {
 
             self.state.rooms.lock().await.push(room_id.to_owned());
             self.state.available_room_ids.push(room_id.to_string());
-        } else {
-            panic!(
-                "could not find room for friendship {}",
-                friendship.local_part
-            );
+            return Ok(());
         }
+        Err(format!(
+            "could not find room for friendship {:?}",
+            friendship
+        ))
     }
 
     /// # Panics
@@ -565,18 +572,14 @@ pub fn join_users_to_room(
     first_user: &User<Synching>,
     second_user: &User<Synching>,
     friendship: Friendship,
-    progress_bar: &ProgressBar,
     retry_attempts: usize,
     room_creation_max_resource_wait_attempts: usize,
     update_account_data: bool,
-) -> impl futures::Future<Output = Option<(String, String)>> {
+) -> impl futures::Future<Output = Option<(Friendship, String, String)>> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
-    let progress_bar = progress_bar.clone();
 
     async move {
-        let mut res: Option<(String, String)> = None;
-
         let first_user_id = first_user.id.localpart().to_string();
         let second_user_id = second_user.id.localpart().to_string();
 
@@ -588,21 +591,26 @@ pub fn join_users_to_room(
             )
             .await;
         if let Some(room_id) = room_created {
-            first_user
+            if let Err(e) = first_user
                 .join_room(&room_id, second_user.id(), update_account_data)
-                .await;
-            second_user
+                .await
+            {
+                log::info!("User {first_user_id} couldn't join to room with {second_user_id}: {e}");
+                return None;
+            }
+            if let Err(e) = second_user
                 .join_room(&room_id, first_user.id(), update_account_data)
-                .await;
+                .await
+            {
+                log::info!("User {second_user_id} couldn't join to room with {first_user_id}: {e}");
+                return None;
+            }
 
-            res = Some((first_user_id, second_user_id));
-        } else {
-            //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
-            log::info!("User {} couldn't create a room", first_user.id());
+            return Some((friendship, first_user_id, second_user_id));
         }
-        progress_bar.inc(1);
-
-        res
+        //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
+        log::info!("User {} couldn't create a room", first_user.id());
+        None
     }
 }
 
