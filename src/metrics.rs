@@ -151,7 +151,7 @@ async fn read_events(
                     }
                     Event::MessageReceived(message_id) => {
                         messages.entry(message_id).or_default().received = Some(Instant::now());
-                        if finishing_phase {
+                        if finishing_phase && !all_messages_received.load(Ordering::Relaxed) {
                             check_and_swap_all_messages_received(&messages, &all_messages_received);
                         }
                     }
@@ -160,6 +160,7 @@ async fn read_events(
                     }
                     Event::AllMessagesSent => {
                         finishing_phase = true;
+                        check_and_swap_all_messages_received(&messages, &all_messages_received);
                     }
                     Event::Finish => {
                         break MetricsReport::from(
@@ -183,7 +184,7 @@ fn check_and_swap_all_messages_received(
     all_messages_received: &AtomicBool,
 ) {
     if calculate_lost_messages(messages) == 0 {
-        all_messages_received.swap(true, Ordering::SeqCst);
+        all_messages_received.swap(true, Ordering::Relaxed);
     }
 }
 

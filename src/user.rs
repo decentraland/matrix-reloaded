@@ -12,6 +12,7 @@ use matrix_sdk::room::Room;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy, UiaaResponse};
 use matrix_sdk::ruma::api::error::FromHttpResponseError::Server;
 use matrix_sdk::ruma::api::error::ServerError::Known;
+use matrix_sdk::ruma::events::room::message::MessageType;
 use matrix_sdk::ruma::{
     api::client::{
         account::register::v3::Request as RegistrationRequest, error::ErrorKind,
@@ -306,11 +307,11 @@ impl User<LoggedIn> {
             .register_event_handler({
                 let tx = self.tx.clone();
                 let user_id = self.id.clone();
-                move |ev, room| {
+                move |event, room| {
                     let tx = tx.clone();
                     let user_id = user_id.clone();
                     async move {
-                        on_room_message(ev, room, tx, user_id).await;
+                        on_room_message(event, room, tx, user_id).await;
                     }
                 }
             })
@@ -621,19 +622,23 @@ async fn on_room_message(
     user_id: OwnedUserId,
 ) {
     if let Room::Joined(room) = room {
-        if event.sender.localpart() == user_id.localpart() {
-            return;
+        if let MessageType::Text(text) = event.content.msgtype {
+            if event.sender.localpart() == user_id.localpart() {
+                return;
+            }
+
+            sender
+                .send(Event::MessageReceived(event.event_id.to_string()))
+                .await
+                .expect("Receiver dropped");
+            log::info!(
+                "{}: {}. (room: {}, user: {})",
+                event.sender,
+                text.body,
+                room.room_id(),
+                user_id,
+            );
         }
-        sender
-            .send(Event::MessageReceived(event.event_id.to_string()))
-            .await
-            .expect("Receiver dropped");
-        log::info!(
-            "User {} received a message from room {} and sent by {}",
-            user_id,
-            room.room_id(),
-            event.sender
-        );
     }
 }
 

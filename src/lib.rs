@@ -336,17 +336,21 @@ impl State {
 
             // Report errors for each task that could not complete
             for task in tasks {
-                // allow unused must use as the error is expected and will be counted and reported
-                #[allow(unused_must_use)]
                 if task.is_err() {
-                    tx.send(Event::SendMessageCancelledError).await;
+                    tx.send(Event::SendMessageCancelledError)
+                        .await
+                        .expect("channel shouldn't be closed");
                 }
             }
 
             // If elapsed time of the current iteration is less than tick duration, we wait until that time.
             let elapsed = loop_start.elapsed();
             if elapsed.le(&self.config.tick_duration) {
+                log::info!("all users acted in {:#?}, waiting for tick to end", elapsed);
                 sleep(self.config.tick_duration - elapsed).await;
+            } else {
+                log::info!("tick duration was not enough to complete send all messages");
+                // TODO: should we adjust next tick duration?
             }
             progress_bar.inc(1);
         }
