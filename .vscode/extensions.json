@@ -2,6 +2,6 @@
     "recommendations": [
         "bungcip.better-toml",
         "usernamehw.errorlens",
-        "matklad.rust-analyzer"
+        "rust-lang.rust-analyzer"
     ]
 }

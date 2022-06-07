@@ -18,8 +18,7 @@ use matrix_sdk::ruma::{
     },
     assign,
 };
-use matrix_sdk::ruma::{RoomId, UserId};
-use matrix_sdk::Client;
+use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId, UserId};
 use matrix_sdk::ClientBuildError;
 use matrix_sdk::HttpError::UiaaError;
 use matrix_sdk::{
@@ -29,6 +28,7 @@ use matrix_sdk::{
         AnyMessageLikeEventContent,
     },
 };
+use matrix_sdk::{Client, RumaApiError};
 use rand::Rng;
 use regex::Regex;
 use serde::Serialize;
@@ -49,13 +49,13 @@ pub struct Registered;
 pub struct LoggedIn;
 #[derive(Clone, Debug)]
 pub struct Synching {
-    rooms: Arc<Mutex<Vec<Box<RoomId>>>>,
+    rooms: Arc<Mutex<Vec<OwnedRoomId>>>,
     available_room_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct User<State> {
-    id: Box<UserId>,
+    id: OwnedUserId,
     client: Arc<Mutex<Client>>,
     tx: Sender<Event>,
     state: State,
@@ -251,8 +251,8 @@ impl User<Registered> {
                 let e1 = format!("{:?}", e);
                 let mut retriable = Retriable::Retriable;
                 if let matrix_sdk::Error::Http(e) = e {
-                    use matrix_sdk::HttpError::ClientApi;
-                    if let ClientApi(Server(Known(e))) = &e {
+                    use matrix_sdk::HttpError::Api;
+                    if let Api(Server(Known(RumaApiError::ClientApi(e)))) = &e {
                         if e.status_code.is_client_error() {
                             retriable = Retriable::NonRetriable;
                         }
@@ -332,7 +332,7 @@ impl User<Synching> {
         friendship: &Friendship,
         retry_attempts: usize,
         max_resource_wait_attempts: usize,
-    ) -> Option<Box<RoomId>> {
+    ) -> Option<OwnedRoomId> {
         let client = self.client.lock().await;
         let alias = friendship.local_part.to_string();
 
@@ -441,7 +441,7 @@ impl User<Synching> {
         }) {
             let room_id = room.room_id();
 
-            self.state.rooms.lock().await.push(Box::from(room_id));
+            self.state.rooms.lock().await.push(room_id.to_owned());
             self.state.available_room_ids.push(room_id.to_string());
         } else {
             panic!(
@@ -498,7 +498,7 @@ impl User<Synching> {
     ///
     /// Picks a random room id between the ones available.
     ///
-    async fn pick_room_id(&self) -> Option<Box<RoomId>> {
+    async fn pick_room_id(&self) -> Option<OwnedRoomId> {
         let rooms = self.state.rooms.lock().await;
 
         // filter rooms available to be use during the step
@@ -566,7 +566,7 @@ async fn on_room_message(
     event: OriginalSyncRoomMessageEvent,
     room: Room,
     sender: Sender<Event>,
-    user_id: Box<UserId>,
+    user_id: OwnedUserId,
 ) {
     if let Room::Joined(room) = room {
         if event.sender.localpart() == user_id.localpart() {
