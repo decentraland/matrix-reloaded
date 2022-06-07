@@ -77,7 +77,7 @@ impl ClientExt for Client {
                 let mut content = account_data
                     .cast::<DirectEventContent>()
                     .deserialize_content(GlobalAccountDataEventType::Direct)
-                    .unwrap();
+                    .expect("Received account_data should be deserializable to DirectEventContent");
                 content.entry(friend_user_id).or_default().push(room_id);
                 Ok(content)
             }
