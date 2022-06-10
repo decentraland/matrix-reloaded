@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use crate::user::User;
 
-#[derive(Clone, Eq)]
+#[derive(Clone, Eq, Debug)]
 pub struct Friendship {
     pub local_part: String,
     pub homeserver: String,

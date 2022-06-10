@@ -1,3 +1,4 @@
+use crate::client::ClientExt;
 use crate::events::Event;
 use crate::friendship::Friendship;
 use crate::text::create_progress_bar;
@@ -11,6 +12,7 @@ use matrix_sdk::room::Room;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy, UiaaResponse};
 use matrix_sdk::ruma::api::error::FromHttpResponseError::Server;
 use matrix_sdk::ruma::api::error::ServerError::Known;
+use matrix_sdk::ruma::events::room::message::MessageType;
 use matrix_sdk::ruma::{
     api::client::{
         account::register::v3::Request as RegistrationRequest, error::ErrorKind,
@@ -84,6 +86,8 @@ pub enum UserRequest {
     CreateRoom,
     JoinRoom,
     SendMessage,
+    UpdateAccountData,
+    Presence,
 }
 
 impl User<Disconnected> {
@@ -220,33 +224,45 @@ impl User<Registered> {
         })
     }
 
-    pub async fn login(&mut self) -> Result<User<LoggedIn>, (Retriable, String)> {
-        let instant = Instant::now();
-
+    pub async fn login(
+        &mut self,
+        send_presence: bool,
+    ) -> Result<User<LoggedIn>, (Retriable, String)> {
         let client = self.client.lock().await;
         log::info!("Attempt to login client with id {}", self.id());
-        let response = client
+        let instant = Instant::now();
+        let login_response = client
             .login(self.id.localpart(), PASSWORD, None, None)
             .await;
+        self.send(Event::RequestDuration((
+            UserRequest::Login,
+            instant.elapsed(),
+        )))
+        .await;
+        log::info!("Login response: {:?}", login_response);
 
-        log::info!("Login response: {:?}", response);
-
-        match response {
-            Ok(_) => {
-                self.send(Event::RequestDuration((
-                    UserRequest::Login,
-                    instant.elapsed(),
-                )))
-                .await;
-
-                Ok(User {
-                    id: self.id.clone(),
-                    client: self.client.clone(),
-                    tx: self.tx.clone(),
-                    state: LoggedIn {},
-                    friendships: self.friendships.clone(),
-                })
+        if login_response.is_ok() && send_presence {
+            let instant = Instant::now();
+            let response = client.send_presence(true).await;
+            self.send(Event::RequestDuration((
+                UserRequest::Presence,
+                instant.elapsed(),
+            )))
+            .await;
+            log::info!("Presence response: {:?}", response);
+            if let Err(e) = response {
+                self.send(Event::Error((UserRequest::Presence, e))).await;
             }
+        }
+
+        match login_response {
+            Ok(_) => Ok(User {
+                id: self.id.clone(),
+                client: self.client.clone(),
+                tx: self.tx.clone(),
+                state: LoggedIn {},
+                friendships: self.friendships.clone(),
+            }),
             Err(e) => {
                 let e1 = format!("{:?}", e);
                 let mut retriable = Retriable::Retriable;
@@ -291,11 +307,11 @@ impl User<LoggedIn> {
             .register_event_handler({
                 let tx = self.tx.clone();
                 let user_id = self.id.clone();
-                move |ev, room| {
+                move |event, room| {
                     let tx = tx.clone();
                     let user_id = user_id.clone();
                     async move {
-                        on_room_message(ev, room, tx, user_id).await;
+                        on_room_message(event, room, tx, user_id).await;
                     }
                 }
             })
@@ -401,24 +417,55 @@ impl User<Synching> {
         }
     }
 
-    pub async fn join_room(&mut self, room_id: &RoomId) {
+    pub async fn join_room(
+        &mut self,
+        room_id: &RoomId,
+        friend_user_id: &UserId,
+        update_account_data: bool,
+    ) -> Result<(), String> {
         let client = self.client.lock().await;
         let instant = Instant::now();
-        let response = client.join_room_by_id(room_id).await;
-        match response {
-            Ok(ref response) => {
-                self.send(Event::RequestDuration((
-                    UserRequest::JoinRoom,
-                    instant.elapsed(),
-                )))
-                .await;
-                self.state.rooms.lock().await.push(response.room_id.clone());
+        let room_response = client.join_room_by_id(room_id).await;
+        self.send(Event::RequestDuration((
+            UserRequest::JoinRoom,
+            instant.elapsed(),
+        )))
+        .await;
+        match room_response {
+            Ok(ref room_response) => {
+                self.state
+                    .rooms
+                    .lock()
+                    .await
+                    .push(room_response.room_id.clone());
                 self.state
                     .available_room_ids
-                    .push(response.room_id.to_string());
+                    .push(room_response.room_id.to_string());
+
+                // update account_data to set as direct conversation (m.direct)
+                if update_account_data {
+                    let instant = Instant::now();
+                    if let Err(e) = client
+                        .add_room_to_list(
+                            friend_user_id.to_owned(),
+                            room_response.room_id.to_owned(),
+                        )
+                        .await
+                    {
+                        self.send(Event::Error((UserRequest::UpdateAccountData, e)))
+                            .await
+                    };
+                    self.send(Event::RequestDuration((
+                        UserRequest::UpdateAccountData,
+                        instant.elapsed(),
+                    )))
+                    .await;
+                }
+                Ok(())
             }
             Err(e) => {
                 self.send(Event::Error((UserRequest::JoinRoom, e))).await;
+                Err("Failed to join room!".to_string())
             }
         }
     }
@@ -426,11 +473,9 @@ impl User<Synching> {
     ///
     /// Looks up a room with alias matching the `friendship` given and adds it to the current `state` of the user.
     ///
-    /// # Panics
+    /// Returns an Err if the `room` for the friendship given cannot be found
     ///
-    /// If the `room` for the friendship given cannot be found
-    ///
-    pub async fn add_friendship(&mut self, friendship: &Friendship) {
+    pub async fn add_friendship(&mut self, friendship: &Friendship) -> Result<(), String> {
         let client = self.client.lock().await.rooms();
         if let Some(room) = client.iter().find(|room| {
             if let Some(alias) = room.canonical_alias() {
@@ -443,12 +488,12 @@ impl User<Synching> {
 
             self.state.rooms.lock().await.push(room_id.to_owned());
             self.state.available_room_ids.push(room_id.to_string());
-        } else {
-            panic!(
-                "could not find room for friendship {}",
-                friendship.local_part
-            );
+            return Ok(());
         }
+        Err(format!(
+            "could not find room for friendship {:?}",
+            friendship
+        ))
     }
 
     /// # Panics
@@ -526,17 +571,14 @@ pub fn join_users_to_room(
     first_user: &User<Synching>,
     second_user: &User<Synching>,
     friendship: Friendship,
-    progress_bar: &ProgressBar,
     retry_attempts: usize,
     room_creation_max_resource_wait_attempts: usize,
-) -> impl futures::Future<Output = Option<(String, String)>> {
+    update_account_data: bool,
+) -> impl futures::Future<Output = Option<(Friendship, String, String)>> {
     let mut first_user = first_user.clone();
     let mut second_user = second_user.clone();
-    let progress_bar = progress_bar.clone();
 
     async move {
-        let mut res: Option<(String, String)> = None;
-
         let first_user_id = first_user.id.localpart().to_string();
         let second_user_id = second_user.id.localpart().to_string();
 
@@ -548,17 +590,26 @@ pub fn join_users_to_room(
             )
             .await;
         if let Some(room_id) = room_created {
-            first_user.join_room(&room_id).await;
-            second_user.join_room(&room_id).await;
+            if let Err(e) = first_user
+                .join_room(&room_id, second_user.id(), update_account_data)
+                .await
+            {
+                log::info!("User {first_user_id} couldn't join to room with {second_user_id}: {e}");
+                return None;
+            }
+            if let Err(e) = second_user
+                .join_room(&room_id, first_user.id(), update_account_data)
+                .await
+            {
+                log::info!("User {second_user_id} couldn't join to room with {first_user_id}: {e}");
+                return None;
+            }
 
-            res = Some((first_user_id, second_user_id));
-        } else {
-            //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
-            log::info!("User {} couldn't create a room", first_user.id());
+            return Some((friendship, first_user_id, second_user_id));
         }
-        progress_bar.inc(1);
-
-        res
+        //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
+        log::info!("User {} couldn't create a room", first_user.id());
+        None
     }
 }
 
@@ -569,19 +620,23 @@ async fn on_room_message(
     user_id: OwnedUserId,
 ) {
     if let Room::Joined(room) = room {
-        if event.sender.localpart() == user_id.localpart() {
-            return;
+        if let MessageType::Text(text) = event.content.msgtype {
+            if event.sender.localpart() == user_id.localpart() {
+                return;
+            }
+
+            sender
+                .send(Event::MessageReceived(event.event_id.to_string()))
+                .await
+                .expect("Receiver dropped");
+            log::info!(
+                "{}: {}. (room: {}, user: {})",
+                event.sender,
+                text.body,
+                room.room_id(),
+                user_id,
+            );
         }
-        sender
-            .send(Event::MessageReceived(event.event_id.to_string()))
-            .await
-            .expect("Receiver dropped");
-        log::info!(
-            "User {} received a message from room {} and sent by {}",
-            user_id,
-            room.room_id(),
-            event.sender
-        );
     }
 }
 

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use serde_with::DisplayFromStr;
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default, Clone)]
 pub struct SavedUserState {
     pub available: i64,
     pub friendships: Vec<(String, String)>,
@@ -53,7 +53,7 @@ impl SavedUserState {
 }
 
 #[serde_as]
-#[derive(Deserialize, Serialize, PartialEq, Debug, Default)]
+#[derive(Deserialize, Serialize, PartialEq, Eq, Debug, Default)]
 pub struct SavedUsers {
     #[serde_as(as = "HashMap<DisplayFromStr, _>")]
     pub users: HashMap<String, SavedUserState>,

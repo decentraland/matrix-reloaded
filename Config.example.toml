@@ -35,3 +35,7 @@ backoff_min_secs = 5
 backoff_max_secs = 20
 # Wait between steps to let server finish commiting and cleaning up after acting
 wait_between_steps_secs = 20
+# Send presence as online on login
+send_presence = true
+# Update account data with direct conversations
+update_account_data = true

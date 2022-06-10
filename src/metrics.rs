@@ -40,6 +40,8 @@ pub struct Metrics {
 pub struct MetricsReport {
     #[serde_as(as = "HashMap<_, _>")]
     requests_average_time: Vec<(UserRequest, u128)>,
+    #[serde_as(as = "HashMap<_, _>")]
+    total_requests: Vec<(UserRequest, u128)>,
     #[serde_as(as = "HashMap<DisplayFromStr, _>")]
     http_errors_per_request: Vec<(String, usize)>,
     message_delivery_average_time: Option<u128>,
@@ -62,6 +64,7 @@ impl MetricsReport {
     ) -> Self {
         let mut http_errors_per_request = calculate_http_errors_per_request(http_errors);
         let mut requests_average_time = calculate_requests_average_time(request_times);
+        let total_requests = total_requests(request_times);
 
         let messages_sent = messages
             .iter()
@@ -79,6 +82,7 @@ impl MetricsReport {
 
         Self {
             requests_average_time,
+            total_requests,
             http_errors_per_request,
             message_delivery_average_time,
             messages_not_sent,
@@ -147,7 +151,7 @@ async fn read_events(
                     }
                     Event::MessageReceived(message_id) => {
                         messages.entry(message_id).or_default().received = Some(Instant::now());
-                        if finishing_phase {
+                        if finishing_phase && !all_messages_received.load(Ordering::Relaxed) {
                             check_and_swap_all_messages_received(&messages, &all_messages_received);
                         }
                     }
@@ -156,6 +160,7 @@ async fn read_events(
                     }
                     Event::AllMessagesSent => {
                         finishing_phase = true;
+                        check_and_swap_all_messages_received(&messages, &all_messages_received);
                     }
                     Event::Finish => {
                         break MetricsReport::from(
@@ -179,7 +184,7 @@ fn check_and_swap_all_messages_received(
     all_messages_received: &AtomicBool,
 ) {
     if calculate_lost_messages(messages) == 0 {
-        all_messages_received.swap(true, Ordering::SeqCst);
+        all_messages_received.swap(true, Ordering::Relaxed);
     }
 }
 
@@ -205,6 +210,22 @@ fn get_error_code(e: &HttpError) -> String {
         }
         _ => e.to_string(),
     }
+}
+
+fn total_requests(request_times: &[(UserRequest, Duration)]) -> Vec<(UserRequest, u128)> {
+    request_times
+        .iter()
+        .fold(
+            HashMap::<UserRequest, u128>::new(),
+            |mut map, (request, _)| {
+                *map.entry(request.clone()).or_default() += 1;
+
+                map
+            },
+        )
+        .iter()
+        .map(|(req, count)| (req.clone(), *count))
+        .collect()
 }
 
 fn calculate_requests_average_time(
