@@ -20,8 +20,7 @@ use matrix_sdk::ruma::{
     },
     assign,
 };
-use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId, UserId};
-use matrix_sdk::ClientBuildError;
+use matrix_sdk::ruma::{OwnedRoomAliasId, OwnedRoomId, OwnedUserId, RoomAliasId, RoomId, UserId};
 use matrix_sdk::HttpError::UiaaError;
 use matrix_sdk::{
     config::SyncSettings,
@@ -31,6 +30,7 @@ use matrix_sdk::{
     },
 };
 use matrix_sdk::{Client, RumaApiError};
+use matrix_sdk::{ClientBuildError, HttpError};
 use rand::Rng;
 use regex::Regex;
 use serde::Serialize;
@@ -348,7 +348,7 @@ impl User<Synching> {
         friendship: &Friendship,
         retry_attempts: usize,
         max_resource_wait_attempts: usize,
-    ) -> Option<OwnedRoomId> {
+    ) -> Result<CreateRoomResponse, HttpError> {
         let client = self.client.lock().await;
         let alias = friendship.local_part.to_string();
 
@@ -361,7 +361,7 @@ impl User<Synching> {
                     "Creating room {} failed due to max retry attempts",
                     friendship.local_part
                 );
-                break None;
+                break Ok(CreateRoomResponse::Failed);
             }
 
             i += 1;
@@ -378,7 +378,7 @@ impl User<Synching> {
                         instant.elapsed(),
                     )))
                     .await;
-                    break Some(response.room_id.clone());
+                    break Ok(CreateRoomResponse::Created(response.room_id.clone()));
                 }
                 Err(e) => {
                     log::error!("Failed to create room {}", e);
@@ -388,9 +388,12 @@ impl User<Synching> {
                             match &error_kind.kind {
                                 ErrorKind::RoomInUse => {
                                     self.send(Event::Error((UserRequest::CreateRoom, e))).await;
-
                                     // We break here because this is an unrecoverable error, this shouldn't happen since it means we're trying to create an already existent room
-                                    break None;
+                                    break Ok(CreateRoomResponse::AlreadyTaken(
+                                        <&RoomAliasId>::try_from(alias.as_str())
+                                            .unwrap()
+                                            .to_owned(),
+                                    ));
                                 }
                                 ErrorKind::ResourceLimitExceeded { admin_contact: _ } => {
                                     max_resource_attempts += 1;
@@ -403,15 +406,13 @@ impl User<Synching> {
                                         self.send(Event::Error((UserRequest::CreateRoom, e))).await;
 
                                         // We break here to prevent overloading the server, if it returns Resource limits exceeded we try to wait for the throttle to stop a few times
-                                        break None;
+                                        break Ok(CreateRoomResponse::Failed);
                                     }
                                 }
                                 _ => {}
                             }
                         }
                     }
-
-                    self.send(Event::Error((UserRequest::CreateRoom, e))).await;
                 }
             }
         }
@@ -419,13 +420,24 @@ impl User<Synching> {
 
     pub async fn join_room(
         &mut self,
-        room_id: &RoomId,
+        room_id: Option<&RoomId>,
+        alias_id: Option<&RoomAliasId>,
         friend_user_id: &UserId,
         update_account_data: bool,
     ) -> Result<(), String> {
         let client = self.client.lock().await;
         let instant = Instant::now();
-        let room_response = client.join_room_by_id(room_id).await;
+        let room_response = if let Some(room_id) = room_id {
+            client
+                .join_room_by_id_or_alias(room_id.into(), &[self.id.server_name().to_owned()])
+                .await
+        } else if let Some(alias_id) = alias_id {
+            client
+                .join_room_by_id_or_alias(alias_id.into(), &[self.id.server_name().to_owned()])
+                .await
+        } else {
+            return Err("No room or alias id!".to_string());
+        };
         self.send(Event::RequestDuration((
             UserRequest::JoinRoom,
             instant.elapsed(),
@@ -589,23 +601,52 @@ pub fn join_users_to_room(
                 room_creation_max_resource_wait_attempts,
             )
             .await;
-        if let Some(room_id) = room_created {
-            if let Err(e) = first_user
-                .join_room(&room_id, second_user.id(), update_account_data)
-                .await
-            {
-                log::info!("User {first_user_id} couldn't join to room with {second_user_id}: {e}");
-                return None;
-            }
-            if let Err(e) = second_user
-                .join_room(&room_id, first_user.id(), update_account_data)
-                .await
-            {
-                log::info!("User {second_user_id} couldn't join to room with {first_user_id}: {e}");
-                return None;
-            }
+        match room_created {
+            Ok(CreateRoomResponse::AlreadyTaken(alias)) => {
+                if let Err(e) = first_user
+                    .join_room(None, Some(&alias), second_user.id(), update_account_data)
+                    .await
+                {
+                    log::info!(
+                        "User {first_user_id} couldn't join to room with {second_user_id}: {e}"
+                    );
+                    return None;
+                }
+                if let Err(e) = second_user
+                    .join_room(None, Some(&alias), first_user.id(), update_account_data)
+                    .await
+                {
+                    log::info!(
+                        "User {second_user_id} couldn't join to room with {first_user_id}: {e}"
+                    );
+                    return None;
+                }
 
-            return Some((friendship, first_user_id, second_user_id));
+                return Some((friendship, first_user_id, second_user_id));
+            }
+            Ok(CreateRoomResponse::Created(room_id)) => {
+                if let Err(e) = first_user
+                    .join_room(Some(&room_id), None, second_user.id(), update_account_data)
+                    .await
+                {
+                    log::info!(
+                        "User {first_user_id} couldn't join to room with {second_user_id}: {e}"
+                    );
+                    return None;
+                }
+                if let Err(e) = second_user
+                    .join_room(Some(&room_id), None, first_user.id(), update_account_data)
+                    .await
+                {
+                    log::info!(
+                        "User {second_user_id} couldn't join to room with {first_user_id}: {e}"
+                    );
+                    return None;
+                }
+
+                return Some((friendship, first_user_id, second_user_id));
+            }
+            _ => {}
         }
         //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
         log::info!("User {} couldn't create a room", first_user.id());
@@ -813,6 +854,11 @@ pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
     tx.send(Event::Finish).await.expect("Finish event sent");
 }
 
+pub enum CreateRoomResponse {
+    Created(OwnedRoomId),
+    AlreadyTaken(OwnedRoomAliasId),
+    Failed,
+}
 #[cfg(test)]
 mod tests {
     use crate::user::*;
