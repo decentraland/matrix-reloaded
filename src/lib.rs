@@ -2,7 +2,6 @@ use crate::user::create_desired_users;
 use events::Event;
 use exponential_backoff::Backoff;
 use friendship::{Friendship, FriendshipID};
-use futures::future::join_all;
 use futures::stream::iter;
 use futures::StreamExt;
 use indicatif::ProgressBar;
@@ -59,6 +58,7 @@ pub struct Configuration {
     room_creation_retry_attempts: usize,
     user_creation_throughput: usize,
     room_creation_throughput: usize,
+    user_act_throughput: usize,
     room_creation_max_resource_wait_attempts: usize,
     #[serde_as(as = "DurationSeconds<u64>")]
     #[serde(rename = "backoff_min_secs")]
@@ -318,11 +318,11 @@ impl State {
 
             let mut controller = TaskController::with_timeout(self.config.tick_duration);
 
-            let mut handles = vec![];
+            let mut futures = vec![];
 
             for user in users_list.clone() {
                 // Every spawn result in a tokio::select! with the future and the timeout
-                handles.push(controller.spawn({
+                futures.push(controller.spawn({
                     let mut user = user.clone();
                     async move {
                         let message = format!("step {} - {}", step, get_random_string());
@@ -332,14 +332,21 @@ impl State {
             }
 
             // Timeout is contemplated in this join_all because of the controller spawning tasks.
-            let tasks = join_all(handles).await;
+            let stream_iter = iter(futures);
+            let mut buffered_iter = stream_iter.buffer_unordered(self.config.user_act_throughput);
 
             // Report errors for each task that could not complete
-            for task in tasks {
-                if task.is_err() {
-                    tx.send(Event::SendMessageCancelledError)
-                        .await
-                        .expect("channel shouldn't be closed");
+            while let Some(task) = buffered_iter.next().await {
+                match task {
+                    Ok(None) => {
+                        tx.send(Event::SendMessageCancelledError)
+                            .await
+                            .expect("channel shouldn't be closed");
+                    }
+                    Err(_) => {
+                        log::info!("JoinError");
+                    }
+                    _ => {}
                 }
             }
 

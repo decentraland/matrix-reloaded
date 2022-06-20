@@ -24,6 +24,8 @@ room_creation_max_resource_wait_attempts = 5
 user_creation_throughput = 10
 # Max throughput allowed for room creation
 room_creation_throughput = 20
+# Max throughput allowed for user acting
+user_act_throughput = 10
 # Update the client's homeserver URL with the discovery information present in the login response, if any.
 # In case of localhost, you probably want to set as false.
 respect_login_well_known = true
