@@ -1,19 +1,19 @@
 # Total steps
-total_steps = 2
+total_steps = 200
 # Users to be created per step
-users_per_step = 75
+users_per_step = 25
 # Friendships (rooms) based on: total possible friendships * friendship ratio
-friendship_ratio = 0.0003
+friendship_ratio = 0.001
 # Step total duration
-step_duration_in_secs = 30
+step_duration_in_secs = 45
 # Tick duration where users interact each other
-tick_duration_in_secs = 5
+tick_duration_in_secs = 15
 # Max users to act per tick during a step
-max_users_to_act_per_tick_ratio = 0.2
+max_users_to_act_per_tick_ratio = 0.3
 # Time to wait for all messages to be delivered, after that time they are considered as lost
-waiting_period = 30
+waiting_period = 15
 # Enable retry request configuration
-retry_request_config = false
+retry_request_config = true
 # User creation retry attempts (not related to retry_request_config)
 user_creation_retry_attempts = 5
 # Room creation retry attempts (not related to retry_request_config)
@@ -23,12 +23,12 @@ room_creation_max_resource_wait_attempts = 5
 # Max throughput allowed for users initialization (registration and sync)
 user_creation_throughput = 10
 # Max throughput allowed for room creation
-room_creation_throughput = 20
+room_creation_throughput = 5
 # Max throughput allowed for user acting
-user_act_throughput = 10
+user_act_throughput = 25
 # Update the client's homeserver URL with the discovery information present in the login response, if any.
 # In case of localhost, you probably want to set as false.
-respect_login_well_known = true
+respect_login_well_known = false
 # Count of users to work with (create/erase)
 user_count = 3000
 # Backoff min duration in seconds
@@ -36,7 +36,7 @@ backoff_min_secs = 5
 # Backoff max duration in seconds
 backoff_max_secs = 20
 # Wait between steps to let server finish commiting and cleaning up after acting
-wait_between_steps_secs = 20
+wait_between_steps_secs = 10
 # Send presence as online on login
 send_presence = true
 # Update account data with direct conversations
