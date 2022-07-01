@@ -1,0 +1,12 @@
+[server]
+homeserver = "synapse.decentraland.zone"
+wk_login = true
+
+[simulation]
+ticks = 100
+tick_duration_in_secs = 5
+max_users = 2000
+users_per_tick = 10
+
+[requests]
+retry_enabled = true

@@ -1,921 +1,249 @@
-use crate::client::ClientExt;
-use crate::events::Event;
-use crate::friendship::Friendship;
-use crate::text::create_progress_bar;
-use crate::users_state::{load_users, save_users, SavedUserState};
-use crate::Configuration;
-
-use futures::StreamExt;
-use indicatif::ProgressBar;
-use matrix_sdk::config::RequestConfig;
-use matrix_sdk::room::Room;
-use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy, UiaaResponse};
-use matrix_sdk::ruma::api::error::FromHttpResponseError::Server;
-use matrix_sdk::ruma::api::error::ServerError::Known;
-use matrix_sdk::ruma::events::room::message::MessageType;
-use matrix_sdk::ruma::{
-    api::client::{
-        account::register::v3::Request as RegistrationRequest, error::ErrorKind,
-        room::create_room::v3::Request as CreateRoomRequest,
-    },
-    assign,
-};
-use matrix_sdk::ruma::{OwnedRoomAliasId, OwnedRoomId, OwnedUserId, RoomAliasId, RoomId, UserId};
-use matrix_sdk::HttpError::UiaaError;
-use matrix_sdk::{
-    config::SyncSettings,
-    ruma::events::{
-        room::message::{OriginalSyncRoomMessageEvent, RoomMessageEventContent},
-        AnyMessageLikeEventContent,
-    },
-};
-use matrix_sdk::{Client, RumaApiError};
-use matrix_sdk::{ClientBuildError, HttpError};
-use rand::Rng;
-use regex::Regex;
-use serde::Serialize;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use strum::Display;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::Mutex;
-use tokio::time::sleep;
 
-const PASSWORD: &str = "asdfasdf";
-
-pub struct Disconnected {
-    retry_enabled: bool,
-    respect_login_well_known: bool,
-}
-pub struct Registered;
-pub struct LoggedIn;
-#[derive(Clone, Debug)]
-pub struct Synching {
-    rooms: Arc<Mutex<Vec<OwnedRoomId>>>,
-    available_room_ids: Vec<String>,
-}
+use crate::client::{Client, RegisterResult};
+use crate::client::{LoginResult, SyncResult};
+use crate::configuration::SimulationConfig;
+use crate::events::{Notifier, SyncEvent};
+use crate::text::get_random_string;
+use async_channel::Sender;
+use futures::lock::Mutex;
+use matrix_sdk::locks::RwLock;
+use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId, UserId};
+use rand::prelude::SliceRandom;
+use rand::Rng;
 
 #[derive(Clone, Debug)]
-pub struct User<State> {
+pub struct User {
     id: OwnedUserId,
-    client: Arc<Mutex<Client>>,
-    tx: Sender<Event>,
-    state: State,
-    friendships: Vec<(usize, usize)>,
-}
-
-impl<State> User<State> {
-    pub fn id(&self) -> &UserId {
-        self.id.as_ref()
-    }
-
-    pub async fn send(&self, event: Event) {
-        log::info!("Sending event {:?}", event);
-        if self.tx.send(event).await.is_err() {
-            log::info!("Receiver dropped");
-        }
-    }
-}
-
-#[derive(Serialize, Debug, Eq, Hash, PartialEq, Clone, Display)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum UserRequest {
-    Register,
-    Login,
-    CreateRoom,
-    JoinRoom,
-    SendMessage,
-    UpdateAccountData,
-    Presence,
-}
-
-impl User<Disconnected> {
-    pub async fn new(
-        id: &str,
-        homeserver: &str,
-        retry_enabled: bool,
-        respect_login_well_known: bool,
-        tx: Sender<Event>,
-    ) -> Option<User<Disconnected>> {
-        // TODO: check which protocol we want to use: http or https (defaulting to https)
-
-        let (homeserver_no_protocol, _) = get_homeserver_url(homeserver, None);
-
-        let client = get_client(homeserver, retry_enabled, respect_login_well_known).await;
-        let user_id = UserId::parse(format!("@{id}:{homeserver_no_protocol}").as_str()).unwrap();
-
-        Some(Self {
-            id: user_id,
-            client: Arc::new(tokio::sync::Mutex::new(client.unwrap())),
-            tx,
-            state: Disconnected {
-                retry_enabled,
-                respect_login_well_known,
-            },
-            friendships: vec![],
-        })
-    }
-
-    pub async fn new_with_client(
-        id: &str,
-        homeserver: &str,
-        tx: Sender<Event>,
-        client: Arc<tokio::sync::Mutex<Client>>,
-        retry_enabled: bool,
-        respect_login_well_known: bool,
-    ) -> Option<User<Disconnected>> {
-        // TODO: check which protocol we want to use: http or https (defaulting to https)
-        let (homeserver_no_protocol, _) = get_homeserver_url(homeserver, None);
-
-        let user_id = UserId::parse(format!("@{id}:{homeserver_no_protocol}").as_str()).unwrap();
-
-        Some(Self {
-            id: user_id,
-            client,
-            tx,
-            state: Disconnected {
-                retry_enabled,
-                respect_login_well_known,
-            },
-            friendships: vec![],
-        })
-    }
-
-    pub async fn register(&mut self) -> Option<User<Registered>> {
-        let instant = Instant::now();
-
-        let req = assign!(RegistrationRequest::new(), {
-            username: Some(self.id.localpart()),
-            password: Some(PASSWORD),
-            auth: Some(AuthData::Dummy(Dummy::new()))
-        });
-        let client = self.client.lock().await;
-        let response = client.register(req).await;
-
-        match response {
-            Ok(_) => {
-                self.send(Event::RequestDuration((
-                    UserRequest::Register,
-                    instant.elapsed(),
-                )))
-                .await;
-
-                Some(User {
-                    id: self.id.clone(),
-                    client: self.client.clone(),
-                    tx: self.tx.clone(),
-                    state: Registered {},
-                    friendships: self.friendships.clone(),
-                })
-            }
-            Err(e) => {
-                // if ID is already taken, proceed as Registered
-                if let UiaaError(Server(Known(UiaaResponse::MatrixError(e)))) = e {
-                    if e.kind == ErrorKind::UserInUse {
-                        log::info!("Client already registered, proceed to Login {}", self.id());
-                        let user = User::<Disconnected>::new(
-                            self.id.localpart(),
-                            self.id.server_name().as_str(),
-                            self.state.retry_enabled,
-                            self.state.respect_login_well_known,
-                            self.tx.clone(),
-                        )
-                        .await
-                        .unwrap();
-
-                        return Some(User {
-                            id: user.id,
-                            client: user.client,
-                            tx: user.tx,
-                            state: Registered {},
-                            friendships: user.friendships,
-                        });
-                    }
-                } else {
-                    self.send(Event::Error((UserRequest::Register, e))).await;
-                }
-                None
-            }
-        }
-    }
-}
-
-impl User<Registered> {
-    pub async fn new(
-        id: &str,
-        homeserver: &str,
-        retry_enabled: bool,
-        respect_login_well_known: bool,
-        tx: Sender<Event>,
-    ) -> Option<User<Registered>> {
-        // TODO: check which protocol we want to use: http or https (defaulting to https)
-        let (homeserver_no_protocol, _) = get_homeserver_url(homeserver, None);
-
-        let client = get_client(homeserver, retry_enabled, respect_login_well_known).await;
-        let user_id = UserId::parse(format!("@{id}:{homeserver_no_protocol}").as_str()).unwrap();
-
-        Some(Self {
-            id: user_id,
-            client: Arc::new(tokio::sync::Mutex::new(client.unwrap())),
-            tx,
-            state: Registered {},
-            friendships: vec![],
-        })
-    }
-
-    pub async fn login(
-        &mut self,
-        send_presence: bool,
-    ) -> Result<User<LoggedIn>, (Retriable, String)> {
-        let client = self.client.lock().await;
-        log::info!("Attempt to login client with id {}", self.id());
-        let instant = Instant::now();
-        let login_response = client
-            .login(self.id.localpart(), PASSWORD, None, None)
-            .await;
-        self.send(Event::RequestDuration((
-            UserRequest::Login,
-            instant.elapsed(),
-        )))
-        .await;
-        log::info!("Login response: {:?}", login_response);
-
-        if login_response.is_ok() && send_presence {
-            let instant = Instant::now();
-            let response = client.send_presence(true).await;
-            self.send(Event::RequestDuration((
-                UserRequest::Presence,
-                instant.elapsed(),
-            )))
-            .await;
-            log::info!("Presence response: {:?}", response);
-            if let Err(e) = response {
-                self.send(Event::Error((UserRequest::Presence, e))).await;
-            }
-        }
-
-        match login_response {
-            Ok(_) => Ok(User {
-                id: self.id.clone(),
-                client: self.client.clone(),
-                tx: self.tx.clone(),
-                state: LoggedIn {},
-                friendships: self.friendships.clone(),
-            }),
-            Err(e) => {
-                let e1 = format!("{:?}", e);
-                let mut retriable = Retriable::Retriable;
-                if let matrix_sdk::Error::Http(e) = e {
-                    use matrix_sdk::HttpError::Api;
-                    if let Api(Server(Known(RumaApiError::ClientApi(e)))) = &e {
-                        if e.status_code.is_client_error() {
-                            retriable = Retriable::NonRetriable;
-                        }
-                    }
-                    self.send(Event::Error((UserRequest::Login, e))).await;
-                }
-
-                Err((retriable, e1))
-            }
-        }
-    }
-}
-
-pub enum Retriable {
-    Retriable,
-    NonRetriable,
-}
-
-impl User<LoggedIn> {
-    pub async fn sync(&self) -> User<Synching> {
-        let client = self.client.lock().await;
-
-        let mut rooms = vec![];
-        // This sync once is used so that the client loads all the rooms that the user has once joined,
-        // this is because the get_joined_room will then run locally and avoid http requests
-        let response = client.sync_once(SyncSettings::default()).await;
-
-        if let Ok(res) = response {
-            for (room, _) in res.rooms.join {
-                rooms.push(room);
-            }
-        }
-
-        // Then we register an event handler to read new messages
-        client
-            .register_event_handler({
-                let tx = self.tx.clone();
-                let user_id = self.id.clone();
-                move |event, room| {
-                    let tx = tx.clone();
-                    let user_id = user_id.clone();
-                    async move {
-                        on_room_message(event, room, tx, user_id).await;
-                    }
-                }
-            })
-            .await;
-
-        tokio::spawn({
-            // we are not cloning the mutex to avoid locking it forever
-            let client = client.clone();
-            async move {
-                client.sync(SyncSettings::default()).await;
-            }
-        });
-
-        User {
-            id: self.id.clone(),
-            client: self.client.clone(),
-            tx: self.tx.clone(),
-            state: Synching {
-                rooms: Arc::new(Mutex::new(rooms)),
-                available_room_ids: vec![],
-            },
-            friendships: self.friendships.clone(),
-        }
-    }
-}
-
-impl User<Synching> {
-    pub fn has_friendships(&self) -> bool {
-        !self.state.available_room_ids.is_empty()
-    }
-
-    pub async fn create_room(
-        &mut self,
-        friendship: &Friendship,
-        retry_attempts: usize,
-        max_resource_wait_attempts: usize,
-    ) -> Result<CreateRoomResponse, HttpError> {
-        let client = self.client.lock().await;
-        let alias = friendship.local_part.to_string();
-
-        let mut i = 0;
-        let mut max_resource_attempts = 0;
-
-        loop {
-            if i == retry_attempts {
-                log::warn!(
-                    "Creating room {} failed due to max retry attempts",
-                    friendship.local_part
-                );
-                break Ok(CreateRoomResponse::Failed);
-            }
-
-            i += 1;
-
-            let instant = Instant::now();
-            let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias) });
-
-            let response = client.create_room(request).await;
-
-            match response {
-                Ok(ref response) => {
-                    self.send(Event::RequestDuration((
-                        UserRequest::CreateRoom,
-                        instant.elapsed(),
-                    )))
-                    .await;
-                    break Ok(CreateRoomResponse::Created(response.room_id.clone()));
-                }
-                Err(e) => {
-                    log::error!("Failed to create room {}", e);
-
-                    if let Some(error_response) = e.uiaa_response() {
-                        if let Some(error_kind) = &error_response.auth_error {
-                            match &error_kind.kind {
-                                ErrorKind::RoomInUse => {
-                                    self.send(Event::Error((UserRequest::CreateRoom, e))).await;
-                                    // We break here because this is an unrecoverable error, this shouldn't happen since it means we're trying to create an already existent room
-                                    break Ok(CreateRoomResponse::AlreadyTaken(
-                                        <&RoomAliasId>::try_from(alias.as_str())
-                                            .unwrap()
-                                            .to_owned(),
-                                    ));
-                                }
-                                ErrorKind::ResourceLimitExceeded { admin_contact: _ } => {
-                                    max_resource_attempts += 1;
-
-                                    if max_resource_attempts < max_resource_wait_attempts {
-                                        let mut rng = rand::thread_rng();
-
-                                        sleep(Duration::from_secs(rng.gen_range(2..5))).await;
-                                    } else {
-                                        self.send(Event::Error((UserRequest::CreateRoom, e))).await;
-
-                                        // We break here to prevent overloading the server, if it returns Resource limits exceeded we try to wait for the throttle to stop a few times
-                                        break Ok(CreateRoomResponse::Failed);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    pub async fn join_room(
-        &mut self,
-        room_id: Option<&RoomId>,
-        alias_id: Option<&RoomAliasId>,
-        friend_user_id: &UserId,
-        update_account_data: bool,
-    ) -> Result<(), String> {
-        let client = self.client.lock().await;
-        let instant = Instant::now();
-        let room_response = if let Some(room_id) = room_id {
-            client
-                .join_room_by_id_or_alias(room_id.into(), &[self.id.server_name().to_owned()])
-                .await
-        } else if let Some(alias_id) = alias_id {
-            client
-                .join_room_by_id_or_alias(alias_id.into(), &[self.id.server_name().to_owned()])
-                .await
-        } else {
-            return Err("No room or alias id!".to_string());
-        };
-        self.send(Event::RequestDuration((
-            UserRequest::JoinRoom,
-            instant.elapsed(),
-        )))
-        .await;
-        match room_response {
-            Ok(ref room_response) => {
-                self.state
-                    .rooms
-                    .lock()
-                    .await
-                    .push(room_response.room_id.clone());
-                self.state
-                    .available_room_ids
-                    .push(room_response.room_id.to_string());
-
-                // update account_data to set as direct conversation (m.direct)
-                if update_account_data {
-                    let instant = Instant::now();
-                    if let Err(e) = client
-                        .add_room_to_list(
-                            friend_user_id.to_owned(),
-                            room_response.room_id.to_owned(),
-                        )
-                        .await
-                    {
-                        self.send(Event::Error((UserRequest::UpdateAccountData, e)))
-                            .await
-                    };
-                    self.send(Event::RequestDuration((
-                        UserRequest::UpdateAccountData,
-                        instant.elapsed(),
-                    )))
-                    .await;
-                }
-                Ok(())
-            }
-            Err(e) => {
-                self.send(Event::Error((UserRequest::JoinRoom, e))).await;
-                Err("Failed to join room!".to_string())
-            }
-        }
-    }
-
-    ///
-    /// Looks up a room with alias matching the `friendship` given and adds it to the current `state` of the user.
-    ///
-    /// Returns an Err if the `room` for the friendship given cannot be found
-    ///
-    pub async fn add_friendship(&mut self, friendship: &Friendship) -> Result<(), String> {
-        let client = self.client.lock().await.rooms();
-        if let Some(room) = client.iter().find(|room| {
-            if let Some(alias) = room.canonical_alias() {
-                return alias.alias().eq_ignore_ascii_case(&friendship.local_part);
-            }
-
-            false
-        }) {
-            let room_id = room.room_id();
-
-            self.state.rooms.lock().await.push(room_id.to_owned());
-            self.state.available_room_ids.push(room_id.to_string());
-            return Ok(());
-        }
-        Err(format!(
-            "could not find room for friendship {:?}",
-            friendship
-        ))
-    }
-
-    /// # Panics
-    ///
-    /// - Panics if `rooms` or `available_room_ids` is empty or are disjoint
-    /// - Panics if client cannot get joined room for the selected `room_id`
-    ///
-    pub async fn act(&mut self, message: String) {
-        let room_id = self
-            .pick_room_id()
-            .await
-            .unwrap_or_else(|| panic!("no room for the current user to act {}", self.id()));
-
-        let content =
-            AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(message));
-
-        let client = self.client.lock().await;
-
-        let instant = Instant::now();
-
-        let room = client
-            .get_joined_room(&room_id)
-            .unwrap_or_else(|| panic!("cannot get joined room {}", room_id));
-
-        let response = room.send(content, None).await;
-
-        use Event::*;
-
-        match response {
-            Ok(response) => {
-                self.send(RequestDuration((
-                    UserRequest::SendMessage,
-                    instant.elapsed(),
-                )))
-                .await;
-
-                self.send(MessageSent(response.event_id.to_string())).await;
-            }
-            Err(e) => {
-                if let matrix_sdk::Error::Http(e) = e {
-                    self.send(Error((UserRequest::SendMessage, e))).await;
-                }
-            }
-        }
-    }
-
-    ///
-    /// Picks a random room id between the ones available.
-    ///
-    async fn pick_room_id(&self) -> Option<OwnedRoomId> {
-        let rooms = self.state.rooms.lock().await;
-
-        // filter rooms available to be use during the step
-        let rooms = rooms
-            .iter()
-            .filter(|room| {
-                self.state
-                    .available_room_ids
-                    .iter()
-                    .any(|available_room| room.to_string().eq_ignore_ascii_case(available_room))
-            })
-            .collect::<Vec<_>>();
-
-        if rooms.is_empty() {
-            None
-        } else {
-            // pick a random room between the available ones
-            let room_id = rooms[rand::thread_rng().gen_range(0..rooms.len())].clone();
-            Some(room_id)
-        }
-    }
-}
-
-pub fn join_users_to_room(
-    first_user: &User<Synching>,
-    second_user: &User<Synching>,
-    friendship: Friendship,
-    retry_attempts: usize,
-    room_creation_max_resource_wait_attempts: usize,
-    update_account_data: bool,
-) -> impl futures::Future<Output = Option<(Friendship, String, String)>> {
-    let mut first_user = first_user.clone();
-    let mut second_user = second_user.clone();
-
-    async move {
-        let first_user_id = first_user.id.localpart().to_string();
-        let second_user_id = second_user.id.localpart().to_string();
-
-        let room_created = first_user
-            .create_room(
-                &friendship,
-                retry_attempts,
-                room_creation_max_resource_wait_attempts,
-            )
-            .await;
-        match room_created {
-            Ok(CreateRoomResponse::AlreadyTaken(alias)) => {
-                if let Err(e) = first_user
-                    .join_room(None, Some(&alias), second_user.id(), update_account_data)
-                    .await
-                {
-                    log::info!(
-                        "User {first_user_id} couldn't join to room with {second_user_id}: {e}"
-                    );
-                    return None;
-                }
-                if let Err(e) = second_user
-                    .join_room(None, Some(&alias), first_user.id(), update_account_data)
-                    .await
-                {
-                    log::info!(
-                        "User {second_user_id} couldn't join to room with {first_user_id}: {e}"
-                    );
-                    return None;
-                }
-
-                return Some((friendship, first_user_id, second_user_id));
-            }
-            Ok(CreateRoomResponse::Created(room_id)) => {
-                if let Err(e) = first_user
-                    .join_room(Some(&room_id), None, second_user.id(), update_account_data)
-                    .await
-                {
-                    log::info!(
-                        "User {first_user_id} couldn't join to room with {second_user_id}: {e}"
-                    );
-                    return None;
-                }
-                if let Err(e) = second_user
-                    .join_room(Some(&room_id), None, first_user.id(), update_account_data)
-                    .await
-                {
-                    log::info!(
-                        "User {second_user_id} couldn't join to room with {first_user_id}: {e}"
-                    );
-                    return None;
-                }
-
-                return Some((friendship, first_user_id, second_user_id));
-            }
-            _ => {}
-        }
-        //TODO!: This should panic or abort somehow after exhausting all retries of creating the room
-        log::info!("User {} couldn't create a room", first_user.id());
-        None
-    }
-}
-
-async fn on_room_message(
-    event: OriginalSyncRoomMessageEvent,
-    room: Room,
-    sender: Sender<Event>,
-    user_id: OwnedUserId,
-) {
-    if let Room::Joined(room) = room {
-        if let MessageType::Text(text) = event.content.msgtype {
-            if event.sender.localpart() == user_id.localpart() {
-                return;
-            }
-
-            sender
-                .send(Event::MessageReceived(event.event_id.to_string()))
-                .await
-                .expect("Receiver dropped");
-            log::info!(
-                "{}: {}. (room: {}, user: {})",
-                event.sender,
-                text.body,
-                room.room_id(),
-                user_id,
-            );
-        }
-    }
-}
-
-/// This function returns homeserver domain and url, ex:
-///  - get_homeserver_url("matrix.domain.com") => ("matrix.domain.com", "https://matrix.domain.com")
-fn get_homeserver_url(homeserver: &str, protocol: Option<&str>) -> (String, String) {
-    let regex = Regex::new(r"https?://").unwrap();
-    if regex.is_match(homeserver) {
-        let parts: Vec<&str> = regex.splitn(homeserver, 2).collect();
-        (parts[1].to_string(), homeserver.to_string())
-    } else {
-        let protocol = protocol.unwrap_or("https");
-        (homeserver.to_string(), format!("{protocol}://{homeserver}"))
-    }
-}
-
-async fn get_client(
-    homeserver_url: &str,
-    retry_enabled: bool,
-    respect_login_well_known: bool,
-) -> Result<Client, ClientBuildError> {
-    let instant = Instant::now();
-
-    let (_, homeserver) = get_homeserver_url(homeserver_url, None);
-
-    log::info!("Attempt to create a client");
-
-    let timeout = Duration::from_secs(30);
-
-    let request_config = if retry_enabled {
-        RequestConfig::new().retry_timeout(timeout)
-    } else {
-        RequestConfig::new().disable_retry().timeout(timeout)
-    };
-
-    let client = Client::builder()
-        .request_config(request_config)
-        .homeserver_url(homeserver)
-        .respect_login_well_known(respect_login_well_known)
-        .build()
-        .await;
-
-    client
-        .map(|c| {
-            log::info!("New client created {}", instant.elapsed().as_millis());
-            c
-        })
-        .map_err(|e| {
-            log::info!("Failed to create client {}", &e);
-            e
-        })
-}
-
-struct UserParams {
-    server: String,
-    progress_bar: ProgressBar,
-    i: i64,
-    retry_attempts: usize,
     client: Client,
-    tx: Sender<Event>,
-    respect_login_well_known: bool,
-    retry_enabled: bool,
+    state: State,
 }
 
-fn create_user(user_params: UserParams) -> impl futures::Future<Output = Option<User<Registered>>> {
-    let client_arc = Arc::new(tokio::sync::Mutex::new(user_params.client));
-    let progress_bar = user_params.progress_bar.clone();
+#[derive(Clone, Debug)]
+enum State {
+    Unauthenticated,
+    Unregistered,
+    LoggedIn,
+    Sync {
+        rooms: Arc<RwLock<Vec<OwnedRoomId>>>, // available rooms that user can send messages
+        events: Arc<Mutex<Vec<SyncEvent>>>, // recent events to be processed and react, for instance to respond to friends or join rooms
+        cancel_sync: Sender<bool>,
+    },
+    LoggedOut,
+}
 
-    async move {
-        let id = format!("user_{}", user_params.i);
+impl User {
+    pub async fn new(id_number: usize, notifier: Notifier, config: &SimulationConfig) -> Self {
+        let homeserver = &config.server.homeserver;
+        let id = get_user_id(id_number, homeserver);
 
-        for _ in 0..user_params.retry_attempts {
-            let user = User::new_with_client(
-                &id,
-                &user_params.server,
-                user_params.tx.clone(),
-                client_arc.clone(),
-                user_params.retry_enabled,
-                user_params.respect_login_well_known,
-            )
-            .await;
+        Self {
+            id,
+            client: Client::new(notifier, config).await,
+            state: State::Unauthenticated,
+        }
+    }
 
-            if let Some(mut user) = user {
-                if let Some(user) = user.register().await {
-                    log::info!("User {} is now registered", user.id());
-                    progress_bar.inc(1);
-                    return Some(user);
-                }
+    pub async fn act(&mut self, config: &SimulationConfig) {
+        match &self.state {
+            State::Unauthenticated => self.log_in().await,
+            State::Unregistered => self.register().await,
+            State::LoggedIn => self.sync().await,
+            State::Sync { .. } => self.socialize(config).await,
+            State::LoggedOut => self.restart(config).await,
+        }
+    }
+
+    async fn restart(&mut self, config: &SimulationConfig) {
+        log::info!("user '{}' act => {}", self.id, "RESTART");
+        self.client.reset(config).await;
+        self.state = State::Unauthenticated;
+    }
+
+    async fn log_in(&mut self) {
+        log::info!("user '{}' act => {}", self.id, "LOG IN");
+
+        match self.client.login(&self.id).await {
+            LoginResult::Ok => {
+                self.state = State::LoggedIn;
+            }
+            LoginResult::NotRegistered => {
+                self.state = State::Unregistered;
+            }
+            LoginResult::Failed => {
+                log::info!("user {} failed to login, maybe retry next time...", self.id);
             }
         }
-
-        //TODO!: This should panic or abort somehow after exhausting all retries of creating the user
-        log::info!("Couldn't init a user");
-        progress_bar.inc(1);
-        None
     }
-}
 
-///
-/// # Panics
-/// If user cannot be created (i.e. returning None)
-///
-pub async fn create_desired_users(config: &Configuration, tx: Sender<Event>) {
-    let users_to_create = config.user_count;
-
-    let mut servers_to_current_users = load_users(config.users_filename.clone());
-
-    let mut users = vec![];
-    let progress_bar = create_progress_bar(
-        "Init users".to_string(),
-        users_to_create.try_into().unwrap(),
-    );
-    progress_bar.tick();
-
-    let homeserver_url = config.homeserver_url.clone();
-
-    let client = get_client(
-        &homeserver_url,
-        config.retry_request_config,
-        config.respect_login_well_known,
-    )
-    .await
-    .unwrap();
-
-    let current_users = servers_to_current_users.get_available_users(&homeserver_url);
-
-    let current_user_count = current_users.available;
-
-    progress_bar.println(format!(
-        "{} users currently available for server '{}', creating new {} for a total of {}",
-        current_user_count,
-        config.homeserver_url,
-        users_to_create,
-        current_user_count + users_to_create
-    ));
-
-    let futures = (current_user_count..(users_to_create + current_user_count)).map(|i| {
-        create_user(UserParams {
-            server: homeserver_url.clone(),
-            progress_bar: progress_bar.clone(),
-            i,
-            retry_attempts: config.user_creation_retry_attempts,
-            client: client.clone(),
-            tx: tx.clone(),
-            retry_enabled: config.retry_request_config,
-            respect_login_well_known: config.respect_login_well_known,
-        })
-    });
-
-    let stream_iter = futures::stream::iter(futures);
-    let mut buffered_iter = stream_iter.buffer_unordered(config.user_creation_throughput);
-
-    while let Some(user) = buffered_iter.next().await {
-        if let Some(user) = user {
-            users.push(user);
-        } else {
-            panic!("could not create user");
+    async fn register(&mut self) {
+        log::info!("user '{}' act => {}", self.id, "REGISTER");
+        match self.client.register(&self.id).await {
+            RegisterResult::Ok => self.state = State::Unauthenticated,
+            RegisterResult::Failed => log::info!(
+                "could not register user {}, will retry next time...",
+                self.id
+            ),
         }
     }
 
-    progress_bar.finish_and_clear();
+    async fn sync(&mut self) {
+        log::info!("user '{}' act => {}", self.id, "SYNC");
+        match self.client.sync(&self.id).await {
+            SyncResult::Ok {
+                mut joined_rooms,
+                invited_rooms,
+                cancel_sync,
+            } => {
+                let mut rooms = vec![];
+                rooms.append(&mut joined_rooms);
 
-    servers_to_current_users.add_user(
-        homeserver_url.clone(),
-        SavedUserState {
-            available: config.user_count + current_user_count,
-            friendships: vec![],
-            ..Default::default()
-        },
-    );
+                let mut events = vec![];
+                for invited_room in invited_rooms {
+                    events.push(SyncEvent::Invite(invited_room));
+                }
+                self.state = State::Sync {
+                    rooms: Arc::new(RwLock::new(rooms)),
+                    events: Arc::new(Mutex::new(events)),
+                    cancel_sync,
+                }
+            }
+            SyncResult::Failed => log::info!(
+                "user {} couldn't make initial sync, will retry next time...",
+                self.id
+            ),
+        }
+    }
 
-    save_users(&servers_to_current_users, config.users_filename.clone());
+    async fn read_sync_events(&self, events: &Mutex<Vec<SyncEvent>>) {
+        log::info!("user '{}' reading sync events", self.id);
+        let mut new_events = self.client.read_sync_events().await;
+        if !new_events.is_empty() {
+            let mut events = events.lock().await;
+            events.append(&mut new_events);
+            log::info!("user '{}' has {} sync events", self.id, events.len());
+        } else {
+            log::info!("user '{}' has no sync events", self.id);
+        }
+    }
 
-    tx.send(Event::Finish).await.expect("Finish event sent");
+    // user social skills are:
+    // - react to received messages or invitations
+    // - send a message to a friend
+    // - add a new friend
+    // - log out (not so social)
+    async fn socialize(&mut self, config: &SimulationConfig) {
+        log::info!("user '{}' act => {}", self.id, "SOCIALIZE");
+
+        if let State::Sync {
+            rooms,
+            events,
+            cancel_sync,
+        } = &self.state
+        {
+            self.read_sync_events(events).await;
+            let mut events = events.lock().await;
+            if let Some(event) = events.pop() {
+                log::info!("--- user '{}' going to react", self.id);
+                self.react(event).await
+            } else {
+                drop(events);
+
+                log::info!("--- user '{}' going to start interaction", self.id);
+                match pick_random_action() {
+                    SocialAction::SendMessage => {
+                        self.send_message(pick_random_room(rooms).await).await
+                    }
+                    SocialAction::AddFriend => {
+                        self.add_friend(pick_random_user(
+                            config.simulation.max_users,
+                            &config.server.homeserver,
+                        ))
+                        .await
+                    }
+                    SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
+                };
+            }
+        } else {
+            log::info!("user cannot socialize if is not in sync state!");
+        }
+    }
+
+    async fn react(&self, event: SyncEvent) {
+        log::info!("user '{}' act => {}", self.id, "REACT");
+        match event {
+            SyncEvent::Invite(room_id) => self.join(&room_id).await,
+            SyncEvent::Message(room_id, _) => self.respond(room_id).await,
+        }
+    }
+
+    async fn respond(&self, room: OwnedRoomId) {
+        log::info!("user '{}' act => {}", self.id, "RESPOND");
+        self.send_message(Some(room)).await;
+    }
+
+    async fn add_friend(&self, user_id: OwnedUserId) {
+        log::info!("user '{}' act => {}", self.id, "ADD FRIEND");
+        self.client.add_friend(&user_id).await;
+    }
+
+    async fn join(&self, room: &RoomId) {
+        log::info!("user '{}' act => {}", self.id, "JOIN ROOM");
+        self.client.join_room(room).await;
+    }
+
+    async fn send_message(&self, room: Option<OwnedRoomId>) {
+        log::info!("user '{}' act => {}", self.id, "SEND MESSAGE");
+        if let Some(room) = room {
+            self.client.send_message(&room, get_random_string()).await;
+        } else {
+            log::info!("trying to send message to friend but don't have one :(")
+        }
+    }
+
+    async fn log_out(&mut self, cancel_sync: Sender<bool>) {
+        log::info!("user '{}' act => {}", self.id, "LOG OUT");
+        cancel_sync
+            .send(true)
+            .await
+            .expect("should be able to cancel sync");
+        self.state = State::LoggedOut;
+    }
 }
 
-pub enum CreateRoomResponse {
-    Created(OwnedRoomId),
-    AlreadyTaken(OwnedRoomAliasId),
-    Failed,
+fn get_user_id(id_number: usize, homeserver: &str) -> OwnedUserId {
+    <&UserId>::try_from(format!("@user_{id_number}:{homeserver}").as_str())
+        .unwrap()
+        .to_owned()
 }
-#[cfg(test)]
-mod tests {
-    use crate::user::*;
-    #[test]
-    fn homeserver_arg_can_start_with_https() {
-        let homeserver_arg = "https://matrix.domain.com";
-        assert_eq!(
-            ("matrix.domain.com".to_string(), homeserver_arg.to_string()),
-            get_homeserver_url(homeserver_arg, None)
-        );
+
+enum SocialAction {
+    AddFriend,
+    SendMessage,
+    LogOut,
+}
+
+// we probably want to distribute this actions and don't make them random (more send messages than logouts)
+fn pick_random_action() -> SocialAction {
+    let mut rng = rand::thread_rng();
+    if rng.gen_ratio(2, 3) {
+        SocialAction::SendMessage
+    } else if rng.gen_ratio(1, 3) {
+        SocialAction::AddFriend
+    } else {
+        SocialAction::LogOut
     }
+}
 
-    #[test]
-    fn homeserver_arg_can_start_with_http() {
-        let homeserver_arg = "http://matrix.domain.com";
+async fn pick_random_room(rooms: &RwLock<Vec<OwnedRoomId>>) -> Option<OwnedRoomId> {
+    rooms
+        .read()
+        .await
+        .choose(&mut rand::thread_rng())
+        .map(|room| room.to_owned())
+}
 
-        assert_eq!(
-            ("matrix.domain.com".to_string(), homeserver_arg.to_string()),
-            get_homeserver_url(homeserver_arg, None)
-        );
-    }
-
-    #[test]
-    fn homeserver_arg_localhost_is_http() {
-        let homeserver_arg = "http://localhost";
-
-        assert_eq!(
-            ("localhost".to_string(), homeserver_arg.to_string()),
-            get_homeserver_url(homeserver_arg, None)
-        );
-    }
-
-    #[test]
-    fn homeserver_arg_can_start_without_protocol() {
-        let homeserver_arg = "matrix.domain.com";
-        let expected_homeserver_url = "https://matrix.domain.com";
-
-        assert_eq!(
-            (
-                homeserver_arg.to_string(),
-                expected_homeserver_url.to_string()
-            ),
-            get_homeserver_url(homeserver_arg, None)
-        );
-    }
-
-    #[test]
-    fn homeserver_should_return_specified_protocol() {
-        let homeserver_arg = "matrix.domain.com";
-        let expected_homeserver_url = "http://matrix.domain.com";
-
-        assert_eq!(
-            (
-                homeserver_arg.to_string(),
-                expected_homeserver_url.to_string()
-            ),
-            get_homeserver_url(homeserver_arg, Some("http"))
-        );
-    }
+fn pick_random_user(max_users: usize, homeserver: &str) -> OwnedUserId {
+    let id_number = rand::thread_rng().gen_range(0..max_users);
+    get_user_id(id_number, homeserver)
 }

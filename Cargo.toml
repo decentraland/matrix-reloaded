@@ -1,12 +1,12 @@
 [package]
-description = "Matrix load testing tool"
+description = "Matrix Reloaded is a load testing tool for Matrix homeservers"
 edition = "2021"
-name = "matrix-load-testing-tool"
-repository = "https://github.com/decentraland/matrix-load-testing-tool"
+name = "matrix-reloaded"
+repository = "https://github.com/decentraland/matrix-reloaded"
 version = "0.1.0"
 
 [dependencies]
-clap = {version = "3.1.8", features = ["derive"]}
+clap = { version = "3.2.8", features = ["derive"] }
 config = "0.13"
 env_logger = "0.9.0"
 futures = "0.3.21"
@@ -26,8 +26,9 @@ exponential-backoff = "1.1.0"
 matrix-sdk = "0.5.0"
 matrix-sdk-base = "0.5.1"
 async-trait = "0.1.53"
+async-channel = "1.6.1"
 
 [lib]
-name = "matrix_load_testing_tool"
+name = "matrix_reloaded"
 path = "src/lib.rs"
 

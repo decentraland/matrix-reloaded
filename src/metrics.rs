@@ -1,5 +1,3 @@
-use crate::events::Event;
-use crate::user::UserRequest;
 use futures::lock::Mutex;
 use matrix_sdk::ruma::api::client::uiaa::UiaaResponse;
 use matrix_sdk::HttpError;
@@ -16,6 +14,9 @@ use std::{
 };
 use tokio::sync::mpsc::Receiver;
 use tokio::task::JoinHandle;
+
+use crate::events::Event;
+use crate::events::UserRequest;
 
 type MessagesClassification = (
     HashMap<String, MessageTimes>,
@@ -143,9 +144,6 @@ async fn read_events(
                     Event::Error(e) => {
                         http_errors.push(e);
                     }
-                    Event::SendMessageCancelledError => {
-                        send_message_cancelled_errors += 1;
-                    }
                     Event::MessageSent(message_id) => {
                         messages.entry(message_id).or_default().sent = Some(Instant::now());
                     }
@@ -157,18 +155,6 @@ async fn read_events(
                     }
                     Event::RequestDuration(request) => {
                         request_times.push(request);
-                    }
-                    Event::AllMessagesSent => {
-                        finishing_phase = true;
-                        check_and_swap_all_messages_received(&messages, &all_messages_received);
-                    }
-                    Event::Finish => {
-                        break MetricsReport::from(
-                            send_message_cancelled_errors,
-                            &http_errors,
-                            &request_times,
-                            messages,
-                        )
                     }
                 }
             }
