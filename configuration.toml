@@ -4,9 +4,9 @@ wk_login = true
 
 [simulation]
 ticks = 100
-tick_duration_in_secs = 5
-max_users = 2000
-users_per_tick = 10
+tick_duration_in_secs = 3
+max_users = 200
+users_per_tick = 20
 
 [requests]
 retry_enabled = true

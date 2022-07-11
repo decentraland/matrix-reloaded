@@ -3,40 +3,42 @@ use crate::{
     events::{Event, Notifier, SyncEvent, UserRequest},
 };
 use async_channel::Sender;
-use futures::lock::Mutex;
+use futures::{lock::Mutex, Future};
+use matrix_sdk::ruma::{
+    api::{
+        client::{
+            account::register::v3::Request as RegistrationRequest,
+            error::ErrorKind,
+            room::create_room::v3::Request as CreateRoomRequest,
+            uiaa::{AuthData, Dummy},
+            Error,
+        },
+        error::FromHttpResponseError::Server,
+        error::ServerError::Known,
+    },
+    assign,
+    events::{
+        room::{
+            member::StrippedRoomMemberEvent,
+            message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent},
+        },
+        AnyMessageLikeEventContent,
+    },
+    OwnedRoomId, OwnedUserId, RoomId, UserId,
+};
 use matrix_sdk::{
     config::{RequestConfig, SyncSettings},
     room::Room,
-    ruma::{
-        events::{
-            room::message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent},
-            AnyMessageLikeEventContent,
-        },
-        OwnedRoomId, OwnedUserId, RoomId, UserId,
-    },
     ClientBuildError,
-};
-use matrix_sdk::{ruma::api::client::Error, HttpError::Api};
-use matrix_sdk::{ruma::api::error::FromHttpResponseError::Server, RumaApiError};
-use matrix_sdk::{
-    ruma::api::{client::error::ErrorKind, error::ServerError::Known},
     Error::Http,
-};
-use matrix_sdk::{
-    ruma::{
-        api::client::{
-            account::register::v3::Request as RegistrationRequest,
-            room::create_room::v3::Request as CreateRoomRequest,
-            uiaa::{AuthData, Dummy},
-        },
-        assign,
-    },
-    LoopCtrl,
+    HttpError::Api,
+    LoopCtrl, RumaApiError,
 };
 use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::time::sleep;
 
 // unbounded channel used to queue sync events like room messages or invites
 type SyncChannel = (
@@ -202,43 +204,13 @@ impl Client {
         let client = self.inner.lock().await;
         let response = client.sync_once(SyncSettings::default()).await;
         let (tx, _) = &self.sync_channel;
-        client
-            .register_event_handler({
-                let tx = tx.clone();
-                let user_id = user_id.to_owned();
-                move |event, room| {
-                    let tx = tx.clone();
-                    let user_id = user_id.clone();
-                    async move {
-                        on_room_event(event, room, tx, user_id).await;
-                    }
-                }
-            })
-            .await;
+
+        add_room_message_event_handler(&client, tx, user_id).await;
+        add_auto_join_event_handler(&client, tx, user_id).await;
 
         let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
 
-        tokio::spawn({
-            // we are not cloning the mutex to avoid locking it forever
-            let client = client.clone();
-            async move {
-                client
-                    .sync_with_callback(SyncSettings::default(), {
-                        let check_cancel = check_cancel.clone();
-                        move |_| {
-                            let check_cancel = check_cancel.clone();
-                            async move {
-                                if check_cancel.try_recv().is_ok() {
-                                    LoopCtrl::Break
-                                } else {
-                                    LoopCtrl::Continue
-                                }
-                            }
-                        }
-                    })
-                    .await;
-            }
-        });
+        tokio::spawn(sync_until_cancel(client, check_cancel).await);
 
         if let Ok(res) = response {
             let joined_rooms = res.rooms.join.keys().cloned().collect::<Vec<_>>();
@@ -326,32 +298,128 @@ impl Client {
     }
 }
 
-async fn on_room_event(
+async fn sync_until_cancel(
+    client: futures::lock::MutexGuard<'_, matrix_sdk::Client>,
+    check_cancel: async_channel::Receiver<bool>,
+) -> impl Future<Output = ()> {
+    // we are not cloning the mutex to avoid locking it forever
+    let client = client.clone();
+    async move {
+        client
+            .sync_with_callback(SyncSettings::default(), {
+                let check_cancel = check_cancel.clone();
+                move |_| {
+                    let check_cancel = check_cancel.clone();
+                    async move {
+                        if check_cancel.try_recv().is_ok() {
+                            LoopCtrl::Break
+                        } else {
+                            LoopCtrl::Continue
+                        }
+                    }
+                }
+            })
+            .await;
+    }
+}
+
+async fn add_room_message_event_handler(
+    client: &futures::lock::MutexGuard<'_, matrix_sdk::Client>,
+    tx: &Sender<SyncEvent>,
+    user_id: &UserId,
+) {
+    client
+        .register_event_handler({
+            let tx = tx.clone();
+            let user_id = user_id.to_owned();
+            move |event, room| {
+                let tx = tx.clone();
+                let user_id = user_id.clone();
+                async move {
+                    on_room_message(event, room, tx, user_id).await;
+                }
+            }
+        })
+        .await;
+}
+
+async fn add_auto_join_event_handler(
+    client: &futures::lock::MutexGuard<'_, matrix_sdk::Client>,
+    tx: &Sender<SyncEvent>,
+    user_id: &UserId,
+) {
+    client
+        .register_event_handler({
+            let tx = tx.clone();
+            let user_id = user_id.to_owned();
+            move |event, room| {
+                let tx = tx.clone();
+                let user_id = user_id.clone();
+                async move {
+                    on_room_invite(event, room, tx, user_id).await;
+                }
+            }
+        })
+        .await;
+}
+
+async fn on_room_invite(
+    room_member: StrippedRoomMemberEvent,
+    room: Room,
+    sender: Sender<SyncEvent>,
+    user_id: OwnedUserId,
+) {
+    if room_member.state_key != user_id {
+        return;
+    }
+
+    if let Room::Invited(room) = room {
+        let mut delay = 2;
+
+        while let Err(err) = room.accept_invitation().await {
+            // retry autojoin due to synapse sending invites, before the
+            // invited user can join for more information see
+            // https://github.com/matrix-org/synapse/issues/4345
+            sleep(Duration::from_secs(delay)).await;
+            delay *= 2;
+
+            if delay > 3600 {
+                log::error!(
+                    "user {} couldn't join room {} ({:?})",
+                    user_id,
+                    room.room_id(),
+                    err
+                );
+                break;
+            }
+        }
+        log::info!("user {} autojoined room {}", user_id, room.room_id());
+        sender
+            .send(SyncEvent::Invite(room.room_id().to_owned()))
+            .await
+            .expect("channel to be open");
+    }
+}
+
+async fn on_room_message(
     event: OriginalSyncRoomMessageEvent,
     room: Room,
     sender: Sender<SyncEvent>,
     user_id: OwnedUserId,
 ) {
-    match room {
-        Room::Joined(room) => {
-            // @todo: add joined rooms to known rooms
-            if let MessageType::Text(text) = event.content.msgtype {
-                if event.sender.localpart() == user_id.localpart() {
-                    return;
-                }
-                log::info!("Message received! next time I will have someone to respond :D");
-                sender
-                    .send(SyncEvent::Message(room.room_id().to_owned(), text.body))
-                    .await
-                    .expect("channel to be open");
+    if let Room::Joined(room) = room {
+        if let MessageType::Text(text) = event.content.msgtype {
+            if event.sender.localpart() == user_id.localpart() {
+                return;
             }
-        }
-        Room::Invited(room) => {
+            log::info!(
+                "Message received! next time user {} will have someone to respond :D",
+                user_id
+            );
             sender
-                .send(SyncEvent::Invite(room.room_id().to_owned()))
+                .send(SyncEvent::Message(room.room_id().to_owned(), text.body))
                 .await
                 .expect("channel to be open");
         }
-        Room::Left(_) => todo!(),
     }
 }

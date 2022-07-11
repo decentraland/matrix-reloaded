@@ -136,33 +136,30 @@ async fn read_events(
 
     let mut rec = receiver.lock().await;
 
-    loop {
-        match rec.recv().await {
-            Some(e) => {
-                log::info!("Event received {:?}", e);
-                match e {
-                    Event::Error(e) => {
-                        http_errors.push(e);
-                    }
-                    Event::MessageSent(message_id) => {
-                        messages.entry(message_id).or_default().sent = Some(Instant::now());
-                    }
-                    Event::MessageReceived(message_id) => {
-                        messages.entry(message_id).or_default().received = Some(Instant::now());
-                        if finishing_phase && !all_messages_received.load(Ordering::Relaxed) {
-                            check_and_swap_all_messages_received(&messages, &all_messages_received);
-                        }
-                    }
-                    Event::RequestDuration(request) => {
-                        request_times.push(request);
-                    }
+    while let Some(event) = rec.recv().await {
+        log::info!("Event received {:?}", event);
+        match event {
+            Event::Error(e) => {
+                http_errors.push(e);
+            }
+            Event::MessageSent(message_id) => {
+                messages.entry(message_id).or_default().sent = Some(Instant::now());
+            }
+            Event::MessageReceived(message_id) => {
+                messages.entry(message_id).or_default().received = Some(Instant::now());
+                if finishing_phase && !all_messages_received.load(Ordering::Relaxed) {
+                    check_and_swap_all_messages_received(&messages, &all_messages_received);
                 }
             }
-            None => {
-                log::info!("Failed to receive an event through the mpsc chanel.");
+            Event::RequestDuration(request) => {
+                request_times.push(request);
             }
         }
     }
+
+    log::info!("Failed to receive an event through the mpsc chanel.");
+    rec.close();
+    MetricsReport::from(0, &[], &[], HashMap::new())
 }
 
 fn check_and_swap_all_messages_received(

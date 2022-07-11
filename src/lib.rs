@@ -67,7 +67,7 @@ impl Simulation {
 
         // start collecting metrics in separated thread
         let metrics = Metrics::new(rx);
-        metrics.run();
+        let metrics_collection_task = metrics.run();
 
         log::info!("starting simulation...");
         for tick in 0..self.config.simulation.ticks {
@@ -116,6 +116,8 @@ impl Simulation {
                 .await;
             }
         }
+
+        metrics_collection_task.abort();
 
         self.report(&metrics).await;
     }
