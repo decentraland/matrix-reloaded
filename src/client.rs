@@ -38,7 +38,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::time::sleep;
 
 // unbounded channel used to queue sync events like room messages or invites
 type SyncChannel = (
@@ -206,7 +205,7 @@ impl Client {
         let (tx, _) = &self.sync_channel;
 
         add_room_message_event_handler(&client, tx, user_id).await;
-        add_auto_join_event_handler(&client, tx, user_id).await;
+        add_invite_event_handler(&client, tx, user_id).await;
 
         let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
 
@@ -343,7 +342,7 @@ async fn add_room_message_event_handler(
         .await;
 }
 
-async fn add_auto_join_event_handler(
+async fn add_invite_event_handler(
     client: &futures::lock::MutexGuard<'_, matrix_sdk::Client>,
     tx: &Sender<SyncEvent>,
     user_id: &UserId,
@@ -374,26 +373,6 @@ async fn on_room_invite(
     }
 
     if let Room::Invited(room) = room {
-        let mut delay = 2;
-
-        while let Err(err) = room.accept_invitation().await {
-            // retry autojoin due to synapse sending invites, before the
-            // invited user can join for more information see
-            // https://github.com/matrix-org/synapse/issues/4345
-            sleep(Duration::from_secs(delay)).await;
-            delay *= 2;
-
-            if delay > 3600 {
-                log::error!(
-                    "user {} couldn't join room {} ({:?})",
-                    user_id,
-                    room.room_id(),
-                    err
-                );
-                break;
-            }
-        }
-        log::info!("user {} autojoined room {}", user_id, room.room_id());
         sender
             .send(SyncEvent::Invite(room.room_id().to_owned()))
             .await
