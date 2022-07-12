@@ -7,6 +7,8 @@ ticks = 100
 tick_duration_in_secs = 3
 max_users = 200
 users_per_tick = 20
+grace_period_duration_in_secs = 20
+output = "output"
 
 [requests]
 retry_enabled = true

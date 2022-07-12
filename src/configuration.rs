@@ -1,5 +1,5 @@
 use clap::Parser;
-use config::{Config, ConfigError, File};
+use config::{ConfigError, File};
 use regex::Regex;
 use serde::Deserialize;
 use serde_with::serde_as;
@@ -41,6 +41,9 @@ pub struct Args {
     /// Max number of users for current simulation
     #[clap(short, long, value_parser)]
     max_users: Option<u64>,
+
+    /// Output folder for reports
+    output: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -51,13 +54,17 @@ pub struct Server {
 
 #[serde_as]
 #[derive(Debug, Deserialize, Clone)]
-pub struct Params {
+pub struct Simulation {
     pub ticks: usize,
     #[serde_as(as = "DurationSeconds<u64>")]
     #[serde(rename = "tick_duration_in_secs")]
     pub tick_duration: Duration,
     pub max_users: usize,
     pub users_per_tick: usize,
+    #[serde_as(as = "DurationSeconds<u64>")]
+    #[serde(rename = "grace_period_duration_in_secs")]
+    pub grace_period_duration: Duration,
+    pub output: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -66,24 +73,25 @@ pub struct Requests {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct SimulationConfig {
+pub struct Config {
     pub server: Server,
-    pub simulation: Params,
+    pub simulation: Simulation,
     pub requests: Requests,
 }
 
-impl SimulationConfig {
+impl Config {
     pub fn new() -> Result<Self, ConfigError> {
         let args = Args::parse();
         println!("Args: {:#?}", args);
 
-        let config = Config::builder()
+        let config = config::Config::builder()
             .add_source(File::with_name("configuration"))
             .set_override("server.homeserver", args.homeserver)?
             .set_override_option("simluation.ticks", args.ticks)?
             .set_override_option("simluation.duration", args.duration)?
             .set_override_option("simluation.max_users", args.max_users)?
             .set_override_option("simluation.users_per_tick", args.users_per_tick)?
+            .set_override_option("simulation.output", args.output)?
             .build()?;
 
         println!("Config: {:#?}", config);

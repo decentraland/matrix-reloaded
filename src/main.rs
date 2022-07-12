@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use config::ConfigError;
-use matrix_reloaded::{configuration::SimulationConfig, Simulation};
+use matrix_reloaded::{configuration::Config, Simulation};
 use miette::Result;
 use tokio_graceful_shutdown::SubsystemHandle;
 use tokio_graceful_shutdown::Toplevel;
@@ -20,12 +20,12 @@ async fn main() -> Result<()> {
 }
 
 async fn simulation(_: SubsystemHandle) -> Result<(), ConfigError> {
-    log::info!("Simulation started.");
+    log::debug!("Simulation started.");
 
-    let mut simulation = Simulation::with_config(SimulationConfig::new()?);
+    let mut simulation = Simulation::with_config(Config::new()?);
     simulation.run().await;
 
-    log::info!("Simulation stopped.");
+    log::debug!("Simulation stopped.");
 
     Ok(())
 }

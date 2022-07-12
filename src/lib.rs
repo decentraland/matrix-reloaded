@@ -1,22 +1,27 @@
-use configuration::SimulationConfig;
+use configuration::Config;
 use events::Event;
+use events::EventCollector;
 use futures::{future::join_all, lock::Mutex};
-use metrics::Metrics;
 use rand::prelude::IteratorRandom;
+use report::Report;
 use std::{
     collections::BTreeMap,
     ops::{Range, Sub},
     sync::Arc,
     time::Instant,
 };
-use tokio::{sync::mpsc, time::sleep};
+use tokio::{
+    sync::mpsc::{self, Sender},
+    task::JoinHandle,
+    time::sleep,
+};
 use tokio_context::task::TaskController;
 use user::User;
 
 mod client;
 pub mod configuration;
 mod events;
-mod metrics;
+mod report;
 mod text;
 mod time;
 mod user;
@@ -38,19 +43,17 @@ impl Entity {
     }
 }
 pub struct Simulation {
-    config: SimulationConfig,
+    config: Config,
     entities: BTreeMap<usize, Entity>,
 }
 
 impl Simulation {
-    pub fn with_config(config: SimulationConfig) -> Self {
-        Self {
-            entities: (0..config.simulation.max_users).fold(BTreeMap::new(), |mut map, i| {
-                map.insert(i, Entity::waiting());
-                map
-            }),
-            config,
-        }
+    pub fn with_config(config: Config) -> Self {
+        let entities = (0..config.simulation.max_users).fold(BTreeMap::new(), |mut map, i| {
+            map.insert(i, Entity::waiting());
+            map
+        });
+        Self { entities, config }
     }
 
     fn pick_random_entity(&mut self) -> (usize, &Entity) {
@@ -62,67 +65,97 @@ impl Simulation {
     }
 
     pub async fn run(&mut self) {
-        // channel used to share events from users to Metrics
+        // channel used to share events from users to the Event Collector
         let (tx, rx) = mpsc::channel::<Event>(100);
 
-        // start collecting metrics in separated thread
-        let metrics = Metrics::new(rx);
-        let metrics_collection_task = metrics.run();
+        // start collecting events in separated thread
+        let event_collector = EventCollector::new();
+        let events_report = event_collector.start(rx);
 
-        log::info!("starting simulation...");
-        for tick in 0..self.config.simulation.ticks {
-            log::info!(" - tick {tick}");
-            let tick_duration = &mut self.config.simulation.tick_duration.clone();
-            let mut controller = TaskController::with_timeout(*tick_duration);
-            let tick_start = Instant::now();
-            let mut join_handles = vec![];
-
-            for tick_user in 0..self.config.simulation.users_per_tick {
-                log::info!(" -- tick user {tick_user}");
-
-                let (id, entity) = self.pick_random_entity();
-
-                if let Entity::Waiting = entity {
-                    log::info!(" --- waking up entity {}", id);
-                    let user = User::new(id, tx.clone(), &self.config).await;
-                    self.entities.insert(id, Entity::from_user(user));
-                }
-
-                if let Entity::Ready { user } = self.entities.get(&id).unwrap() {
-                    // add user action task to be executed in parallel
-                    join_handles.push(controller.spawn({
-                        let user = user.clone();
-                        let config = self.config.clone();
-                        async move {
-                            let mut user = user.lock().await;
-                            user.act(&config).await;
-                        }
-                    }));
-                }
-            }
-
-            join_all(join_handles).await;
-
-            if tick_start
-                .elapsed()
-                .le(&self.config.simulation.tick_duration)
-            {
-                sleep(
-                    self.config
-                        .simulation
-                        .tick_duration
-                        .sub(tick_start.elapsed()),
-                )
-                .await;
-            }
+        // start simulation
+        for tick_number in 0..self.config.simulation.ticks {
+            self.tick(tick_number, &tx, &event_collector).await;
         }
 
-        metrics_collection_task.abort();
+        // notify simulation ended after a time period
+        self.cool_down(&tx).await;
 
-        self.report(&metrics).await;
+        // wait for report response
+        let final_report = events_report.await.expect("events collection to end");
+
+        self.store_report(&final_report).await;
     }
 
-    pub async fn report(&self, metrics: &Metrics) {}
+    async fn cool_down(&self, tx: &Sender<Event>) {
+        // sleep main thread while missing messages are recevied
+        sleep(self.config.simulation.grace_period_duration).await;
+
+        // send finish event
+        tx.send(Event::Finish).await.expect("channel open");
+    }
+
+    async fn tick(
+        &mut self,
+        tick_number: usize,
+        tx: &Sender<Event>,
+        event_collector: &EventCollector,
+    ) {
+        let tick_start = Instant::now();
+        let tick_duration = &mut self.config.simulation.tick_duration.clone();
+
+        let mut controller = TaskController::with_timeout(*tick_duration);
+        let mut join_handles = vec![];
+
+        for _ in 0..self.config.simulation.users_per_tick {
+            let user_action = self.pick_user_action(tx, &mut controller).await;
+            if let Some(user_action) = user_action {
+                join_handles.push(user_action);
+            }
+        }
+        join_all(join_handles).await;
+
+        let tick_report = event_collector.snapshot_report().await;
+        println!("tick {} report: {:#?}", tick_number, tick_report);
+
+        if tick_start.elapsed().le(tick_duration) {
+            sleep(tick_duration.sub(tick_start.elapsed())).await;
+        }
+    }
+
+    async fn pick_user_action(
+        &mut self,
+        tx: &Sender<Event>,
+        controller: &mut TaskController,
+    ) -> Option<JoinHandle<Option<()>>> {
+        let (id, entity) = self.pick_random_entity();
+        if let Entity::Waiting = entity {
+            log::debug!(" --- waking up entity {}", id);
+            let user = User::new(id, tx.clone(), &self.config).await;
+            self.entities.insert(id, Entity::from_user(user));
+        }
+        if let Entity::Ready { user } = self.entities.get(&id).unwrap() {
+            // user action task to be executed in parallel
+            Some(controller.spawn({
+                let user = user.clone();
+                let config = self.config.clone();
+                async move {
+                    let mut user = user.lock().await;
+                    user.act(&config).await;
+                }
+            }))
+        } else {
+            None
+        }
+    }
+
+    pub async fn store_report(&self, report: &Report) {
+        let output_folder = self.config.simulation.output.as_str();
+        let homeserver = self.config.server.homeserver.as_str();
+
+        let output_dir = format!("{output_folder}/{homeserver}");
+
+        report.generate(output_dir.as_str());
+    }
 }
 
 fn pick_random_id(range: Range<usize>) -> usize {

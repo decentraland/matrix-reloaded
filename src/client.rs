@@ -1,5 +1,5 @@
 use crate::{
-    configuration::{get_homeserver_url, SimulationConfig},
+    configuration::{get_homeserver_url, Config},
     events::{Event, Notifier, SyncEvent, UserRequest},
 };
 use async_channel::Sender;
@@ -48,7 +48,7 @@ type SyncChannel = (
 #[derive(Clone, Debug)]
 pub struct Client {
     inner: Arc<Mutex<matrix_sdk::Client>>,
-    metrics_notifier: Notifier,
+    event_notifier: Notifier,
     sync_channel: SyncChannel,
 }
 
@@ -75,7 +75,7 @@ pub enum SyncResult {
 const PASSWORD: &str = "asdfasdf";
 
 impl Client {
-    pub async fn new(notifier: Notifier, config: &SimulationConfig) -> Self {
+    pub async fn new(notifier: Notifier, config: &Config) -> Self {
         let inner = Self::create(
             &config.server.homeserver,
             config.requests.retry_enabled,
@@ -86,7 +86,7 @@ impl Client {
         let channel = async_channel::unbounded::<SyncEvent>();
         Self {
             inner: Arc::new(Mutex::new(inner)),
-            metrics_notifier: notifier,
+            event_notifier: notifier,
             sync_channel: channel,
         }
     }
@@ -128,7 +128,7 @@ impl Client {
         events
     }
 
-    pub async fn reset(&mut self, config: &SimulationConfig) {
+    pub async fn reset(&mut self, config: &Config) {
         let client = Self::create(
             &config.server.homeserver,
             config.requests.retry_enabled,
@@ -143,7 +143,7 @@ impl Client {
         let client = self.inner.lock().await;
         let now = Instant::now();
         let response = client.login(id.localpart(), PASSWORD, None, None).await;
-        self.metrics_notifier
+        self.event_notifier
             .send(Event::RequestDuration((UserRequest::Login, now.elapsed())))
             .await
             .expect("channel should not be closed");
@@ -159,7 +159,7 @@ impl Client {
             })))))) => LoginResult::NotRegistered,
             Err(e) => {
                 if let Http(e) = e {
-                    self.metrics_notifier
+                    self.event_notifier
                         .send(Event::Error((UserRequest::Login, e)))
                         .await
                         .expect("channel should not be closed");
@@ -179,7 +179,7 @@ impl Client {
         });
         let now = Instant::now();
         let response = client.register(req).await;
-        self.metrics_notifier
+        self.event_notifier
             .send(Event::RequestDuration((
                 UserRequest::Register,
                 now.elapsed(),
@@ -188,7 +188,7 @@ impl Client {
             .expect("channel should not be closed");
 
         if let Err(e) = response {
-            self.metrics_notifier
+            self.event_notifier
                 .send(Event::Error((UserRequest::Login, e)))
                 .await
                 .expect("channel should not be closed");
@@ -204,7 +204,7 @@ impl Client {
         let response = client.sync_once(SyncSettings::default()).await;
         let (tx, _) = &self.sync_channel;
 
-        add_room_message_event_handler(&client, tx, user_id).await;
+        add_room_message_event_handler(&client, tx, user_id, &self.event_notifier).await;
         add_invite_event_handler(&client, tx, user_id).await;
 
         let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
@@ -236,7 +236,7 @@ impl Client {
 
         let now = Instant::now();
         let response = room.send(content, None).await;
-        self.metrics_notifier
+        self.event_notifier
             .send(Event::RequestDuration((
                 UserRequest::SendMessage,
                 now.elapsed(),
@@ -244,11 +244,20 @@ impl Client {
             .await
             .expect("channel should not be closed");
 
-        if let Err(Http(e)) = response {
-            self.metrics_notifier
-                .send(Event::Error((UserRequest::Login, e)))
-                .await
-                .expect("channel should not be closed");
+        match response {
+            Ok(response) => {
+                self.event_notifier
+                    .send(Event::MessageSent(response.event_id.to_string()))
+                    .await
+                    .expect("channel open");
+            }
+            Err(Http(e)) => {
+                self.event_notifier
+                    .send(Event::Error((UserRequest::Login, e)))
+                    .await
+                    .expect("channel open");
+            }
+            _ => {}
         }
     }
 
@@ -260,7 +269,7 @@ impl Client {
 
         let now = Instant::now();
         let response = client.create_room(request).await;
-        self.metrics_notifier
+        self.event_notifier
             .send(Event::RequestDuration((
                 UserRequest::CreateRoom,
                 now.elapsed(),
@@ -269,7 +278,7 @@ impl Client {
             .expect("channel should not be closed");
 
         if let Err(e) = response {
-            self.metrics_notifier
+            self.event_notifier
                 .send(Event::Error((UserRequest::CreateRoom, e)))
                 .await
                 .expect("channel should not be closed");
@@ -281,7 +290,7 @@ impl Client {
 
         let now = Instant::now();
         let response = client.join_room_by_id(room_id).await;
-        self.metrics_notifier
+        self.event_notifier
             .send(Event::RequestDuration((
                 UserRequest::JoinRoom,
                 now.elapsed(),
@@ -289,7 +298,7 @@ impl Client {
             .await
             .expect("channel should not be closed");
         if let Err(e) = response {
-            self.metrics_notifier
+            self.event_notifier
                 .send(Event::Error((UserRequest::JoinRoom, e)))
                 .await
                 .expect("channel should not be closed");
@@ -326,16 +335,19 @@ async fn add_room_message_event_handler(
     client: &futures::lock::MutexGuard<'_, matrix_sdk::Client>,
     tx: &Sender<SyncEvent>,
     user_id: &UserId,
+    notifier: &Notifier,
 ) {
     client
         .register_event_handler({
             let tx = tx.clone();
             let user_id = user_id.to_owned();
+            let notifier = notifier.clone();
             move |event, room| {
                 let tx = tx.clone();
                 let user_id = user_id.clone();
+                let notifier = notifier.clone();
                 async move {
-                    on_room_message(event, room, tx, user_id).await;
+                    on_room_message(event, room, tx, user_id, &notifier).await;
                 }
             }
         })
@@ -385,20 +397,25 @@ async fn on_room_message(
     room: Room,
     sender: Sender<SyncEvent>,
     user_id: OwnedUserId,
+    notifier: &Notifier,
 ) {
     if let Room::Joined(room) = room {
         if let MessageType::Text(text) = event.content.msgtype {
             if event.sender.localpart() == user_id.localpart() {
                 return;
             }
-            log::info!(
+            log::debug!(
                 "Message received! next time user {} will have someone to respond :D",
                 user_id
             );
             sender
                 .send(SyncEvent::Message(room.room_id().to_owned(), text.body))
                 .await
-                .expect("channel to be open");
+                .expect("channel open");
+            notifier
+                .send(Event::MessageReceived(event.event_id.to_string()))
+                .await
+                .expect("channel open");
         }
     }
 }
