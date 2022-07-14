@@ -72,7 +72,7 @@ pub struct Requests {
     pub retry_enabled: bool,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 pub struct Config {
     pub server: Server,
     pub simulation: Simulation,
@@ -82,7 +82,7 @@ pub struct Config {
 impl Config {
     pub fn new() -> Result<Self, ConfigError> {
         let args = Args::parse();
-        println!("Args: {:#?}", args);
+        log::debug!("Args: {:#?}", args);
 
         let config = config::Config::builder()
             .add_source(File::with_name("configuration"))
@@ -94,7 +94,7 @@ impl Config {
             .set_override_option("simulation.output", args.output)?
             .build()?;
 
-        println!("Config: {:#?}", config);
+        log::debug!("Config: {:#?}", config);
         config.try_deserialize()
     }
 }

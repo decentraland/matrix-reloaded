@@ -16,11 +16,11 @@ use rand::Rng;
 pub struct User {
     id: OwnedUserId,
     client: Client,
-    state: State,
+    pub state: State,
 }
 
 #[derive(Clone, Debug)]
-enum State {
+pub enum State {
     Unauthenticated,
     Unregistered,
     LoggedIn,
@@ -223,12 +223,12 @@ enum SocialAction {
 // we probably want to distribute this actions and don't make them random (more send messages than logouts)
 fn pick_random_action() -> SocialAction {
     let mut rng = rand::thread_rng();
-    if rng.gen_ratio(2, 3) {
-        SocialAction::SendMessage
+    if rng.gen_ratio(1, 50) {
+        SocialAction::LogOut
     } else if rng.gen_ratio(1, 3) {
         SocialAction::AddFriend
     } else {
-        SocialAction::LogOut
+        SocialAction::SendMessage
     }
 }
 

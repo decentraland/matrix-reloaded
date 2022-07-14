@@ -3,6 +3,7 @@ use crate::events::UserRequest;
 use crate::time::execution_id;
 use crate::time::time_now;
 use matrix_sdk::ruma::api::client::uiaa::UiaaResponse;
+use matrix_sdk::ruma::api::error::*;
 use matrix_sdk::HttpError;
 use matrix_sdk::RumaApiError;
 use serde::Serialize;
@@ -22,12 +23,12 @@ pub struct Report {
     #[serde_as(as = "HashMap<DisplayFromStr, _>")]
     http_errors_per_request: Vec<(String, usize)>,
     message_delivery_average_time: Option<u128>,
-    /// number of messages sent correctly
+    /// number of messages sent correctly but not received (receipent is offline)
     messages_sent: usize,
     /// number of messages received that do not match with sent
     messages_not_sent: usize,
-    /// number of messages sent but not received
-    lost_messages: usize,
+    /// number of messages sent and received during simulation
+    real_time_messages: usize,
 }
 
 impl Report {
@@ -45,16 +46,11 @@ impl Report {
         requests_average_time.sort_unstable_by_key(|(_, time)| Reverse(*time));
         http_errors_per_request.sort_unstable_by_key(|(_, count)| Reverse(*count));
 
-        let messages_sent = messages
-            .iter()
-            .filter(|(_, times)| times.sent.is_some())
-            .count();
-
-        let (lost_messages, messages_not_sent, unknown_messages) =
+        let (real_time_messages, messages_sent, messages_not_sent, unknown_messages) =
             Self::classify_messages(messages);
 
         log::debug!(
-            "there were some {} unknown messages (not sent or received)",
+            "there were {} unknown messages (sent nor received)",
             unknown_messages
         );
 
@@ -65,12 +61,11 @@ impl Report {
             message_delivery_average_time,
             messages_not_sent,
             messages_sent,
-            lost_messages,
+            real_time_messages,
         }
     }
 
     fn get_error_code(e: &HttpError) -> String {
-        use matrix_sdk::ruma::api::error::*;
         match e {
             HttpError::Api(FromHttpResponseError::Server(ServerError::Known(
                 RumaApiError::ClientApi(e),
@@ -142,16 +137,25 @@ impl Report {
             return None;
         }
 
-        let total = messages.iter().fold(0, |total, (_, times)| {
-            if let Some(sent) = times.sent {
-                if let Some(received) = times.received {
-                    return total + (received.duration_since(sent)).as_millis();
+        let messages_sent_and_received = messages
+            .iter()
+            .filter(|(_, times)| times.sent.is_some() && times.received.is_some());
+
+        let total = messages_sent_and_received.fold(0, |total, (_, times)| {
+            let MessageTimes { sent, received } = times;
+            match (sent, received) {
+                (Some(sent), Some(received)) => {
+                    total + (received.duration_since(*sent)).as_millis()
                 }
+                _ => total,
             }
-            total
         });
 
-        Some(total / (messages.len() as u128))
+        if total == 0 {
+            None
+        } else {
+            Some(total / (messages.len() as u128))
+        }
     }
 
     fn calculate_http_errors_per_request(
@@ -168,24 +172,30 @@ impl Report {
         ))
     }
 
-    fn classify_messages(messages: &HashMap<String, MessageTimes>) -> (usize, usize, usize) {
-        let mut messages_not_received = 0;
+    fn classify_messages(messages: &HashMap<String, MessageTimes>) -> (usize, usize, usize, usize) {
+        let mut messages_sent = 0;
         let mut messages_not_sent = 0;
         let mut unknown_messages = 0;
+        let mut real_time_messages = 0;
 
         for times in messages.values() {
             let received = times.received.is_some();
             let sent = times.sent.is_some();
 
             match (sent, received) {
-                (true, false) => messages_not_received += 1,
+                (true, true) => real_time_messages += 1,
+                (true, false) => messages_sent += 1,
                 (false, true) => messages_not_sent += 1,
                 (false, false) => unknown_messages += 1,
-                _ => {}
             };
         }
 
-        (messages_not_received, messages_not_sent, unknown_messages)
+        (
+            real_time_messages,
+            messages_sent,
+            messages_not_sent,
+            unknown_messages,
+        )
     }
 
     pub fn generate(&self, output_dir: &str) {

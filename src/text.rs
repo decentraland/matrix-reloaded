@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -11,14 +10,28 @@ pub fn get_random_string() -> String {
     lipsum(random_number)
 }
 
-pub fn create_progress_bar(text: impl Into<Cow<'static, str>>, size: u64) -> ProgressBar {
-    let progress_style = ProgressStyle::default_bar()
-        .template("{prefix:>12.cyan.bold}: [{bar:57}] {pos}/{len}")
-        .progress_chars("=> ");
+pub fn create_simulation_bar(total_ticks: usize) -> ProgressBar {
+    let progress_bar = ProgressBar::new(total_ticks.try_into().unwrap());
+    let style = ProgressStyle::default_bar()
+        .template(
+            "{prefix:>12.cyan.bold}: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos:>7}/{len:7} ({eta})",
+        )
+        .progress_chars("=>-");
+    progress_bar.set_style(style);
+    progress_bar.set_prefix("Simulation");
+    progress_bar.enable_steady_tick(100);
+    progress_bar
+}
 
-    let progress_bar = ProgressBar::new(size);
+pub fn create_users_bar(size: usize) -> ProgressBar {
+    let progress_style = ProgressStyle::default_bar()
+        .template("{prefix:>12.cyan.bold}: [{wide_bar:.cyan/blue}] {pos:>7}/{len:7}")
+        .progress_chars("o/x");
+
+    let progress_bar = ProgressBar::new(size.try_into().unwrap());
     progress_bar.set_style(progress_style);
-    progress_bar.set_prefix(text);
+    progress_bar.set_prefix("Users in sync");
+    progress_bar.enable_steady_tick(100);
 
     progress_bar
 }
@@ -31,10 +44,10 @@ pub fn default_spinner() -> ProgressBar {
     )
 }
 
-pub async fn spin_for(one_sec: Duration, spinner: &ProgressBar) {
-    let wait_one_sec = Instant::now();
+pub async fn spin_for(time: Duration, spinner: &ProgressBar) {
+    let wait_time = Instant::now();
     loop {
-        if wait_one_sec.elapsed().ge(&one_sec) {
+        if wait_time.elapsed().ge(&time) {
             break;
         }
         sleep(Duration::from_millis(100)).await;

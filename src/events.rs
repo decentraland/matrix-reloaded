@@ -77,10 +77,6 @@ impl EventCollector {
         tokio::spawn(Self::collect_events(receiver, self.events.clone()))
     }
 
-    pub async fn snapshot_report(&self) -> Report {
-        self.events.report().await
-    }
-
     ///
     /// # Panics
     /// If message sent event is processed and the message_id is already present in the messages map

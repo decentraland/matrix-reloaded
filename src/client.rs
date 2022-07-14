@@ -404,7 +404,7 @@ async fn on_room_message(
             if event.sender.localpart() == user_id.localpart() {
                 return;
             }
-            log::debug!(
+            log::info!(
                 "Message received! next time user {} will have someone to respond :D",
                 user_id
             );
