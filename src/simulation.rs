@@ -13,6 +13,7 @@ use indicatif::MultiProgress;
 use indicatif::ProgressBar;
 use matrix_sdk::locks::RwLock;
 use rand::prelude::IteratorRandom;
+use std::env;
 use std::thread;
 use std::{collections::BTreeMap, ops::Sub, sync::Arc, time::Instant};
 use tokio::{
@@ -196,13 +197,21 @@ impl SimulationProgress {
     }
 
     fn start(&self) {
-        let m = self.multi_progress.clone();
-        thread::spawn(move || m.join_and_clear().unwrap());
+        let is_ci = env::var("CI").is_ok();
+        if !is_ci {
+            let m = self.multi_progress.clone();
+            thread::spawn(move || m.join_and_clear().unwrap());
+        }
     }
 
     fn tick(&self, users_syncing: u64) {
-        self.progress_bar.inc(1);
-        self.users_bar.set_position(users_syncing);
+        let is_ci = env::var("CI").is_ok();
+        if is_ci {
+            println!("users syncing: {users_syncing}");
+        } else {
+            self.progress_bar.inc(1);
+            self.users_bar.set_position(users_syncing);
+        }
     }
 
     fn finish(&self) {

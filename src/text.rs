@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    env,
+    time::{Duration, Instant},
+};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use lipsum::lipsum;
@@ -19,7 +22,10 @@ pub fn create_simulation_bar(total_ticks: usize) -> ProgressBar {
         .progress_chars("=>-");
     progress_bar.set_style(style);
     progress_bar.set_prefix("Simulation");
-    progress_bar.enable_steady_tick(100);
+    let is_ci = env::var("CI").is_ok();
+    if !is_ci {
+        progress_bar.enable_steady_tick(100);
+    }
     progress_bar
 }
 
@@ -31,7 +37,10 @@ pub fn create_users_bar(size: usize) -> ProgressBar {
     let progress_bar = ProgressBar::new(size.try_into().unwrap());
     progress_bar.set_style(progress_style);
     progress_bar.set_prefix("Users in sync");
-    progress_bar.enable_steady_tick(100);
+    let is_ci = env::var("CI").is_ok();
+    if !is_ci {
+        progress_bar.enable_steady_tick(100);
+    }
 
     progress_bar
 }

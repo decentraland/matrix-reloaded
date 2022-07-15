@@ -30,6 +30,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CI: 1
 
 jobs:
   run:
