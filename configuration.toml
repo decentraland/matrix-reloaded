@@ -3,9 +3,9 @@ homeserver = "synapse.decentraland.zone"
 wk_login = true
 
 [simulation]
-ticks = 2000
-tick_duration_in_secs = 3
-max_users = 2000
+ticks = 4000
+tick_duration_in_secs = 5
+max_users = 5000
 users_per_tick = 15
 grace_period_duration_in_secs = 30
 output = "output"

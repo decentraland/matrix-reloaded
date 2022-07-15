@@ -72,6 +72,9 @@ impl Simulation {
     }
 
     pub async fn run(&mut self) {
+        println!("server: {:#?}", self.config.server);
+        println!("simulation config: {:#?}", self.config.simulation);
+
         self.progress.start();
         // channel used to share events from users to the Event Collector
         let (tx, rx) = mpsc::channel::<Event>(100);
@@ -216,11 +219,15 @@ impl SimulationProgress {
 
     fn finish(&self) {
         self.progress_bar.disable_steady_tick();
-        self.progress_bar
-            .finish_with_message("Simulation finished!");
-
         self.users_bar.disable_steady_tick();
-        self.users_bar.finish_and_clear();
-        self.multi_progress.join_and_clear().unwrap();
+
+        let is_ci = env::var("CI").is_ok();
+        if !is_ci {
+            self.progress_bar
+                .finish_with_message("Simulation finished!");
+
+            self.users_bar.finish_and_clear();
+            self.multi_progress.join_and_clear().unwrap();
+        }
     }
 }
