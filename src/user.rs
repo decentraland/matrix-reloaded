@@ -209,7 +209,7 @@ impl User {
 }
 
 fn get_user_id(id_number: usize, homeserver: &str) -> OwnedUserId {
-    <&UserId>::try_from(format!("@user_{id_number}:{homeserver}").as_str())
+    <&UserId>::try_from(format!("@someuser_{id_number}:{homeserver}").as_str())
         .unwrap()
         .to_owned()
 }
