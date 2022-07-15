@@ -1,7 +1,5 @@
 use crate::events::MessageTimes;
 use crate::events::UserRequest;
-use crate::time::execution_id;
-use crate::time::time_now;
 use matrix_sdk::ruma::api::client::uiaa::UiaaResponse;
 use matrix_sdk::ruma::api::error::*;
 use matrix_sdk::HttpError;
@@ -198,10 +196,10 @@ impl Report {
         )
     }
 
-    pub fn generate(&self, output_dir: &str) {
-        let reports_dir = Self::ensure_execution_directory(output_dir, &execution_id());
+    pub fn generate(&self, output_dir: &str, execution_id: &str) {
+        let reports_dir = Self::ensure_execution_directory(output_dir, execution_id);
 
-        let path = format!("{}/report_{}.yaml", reports_dir, time_now());
+        let path = format!("{reports_dir}/report_{execution_id}.yaml");
         let buffer = File::create(&path).unwrap();
 
         serde_yaml::to_writer(buffer, self).expect("couldn't write report to file");

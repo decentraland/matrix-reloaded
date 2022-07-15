@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
-use crate::configuration::Config;
+use crate::configuration::{get_homeserver_url, Config};
 use crate::events::{Notifier, SyncEvent};
 use crate::text::get_random_string;
 use async_channel::Sender;
@@ -34,8 +34,12 @@ pub enum State {
 
 impl User {
     pub async fn new(id_number: usize, notifier: Notifier, config: &Config) -> Self {
-        let homeserver = &config.server.homeserver;
-        let id = get_user_id(id_number, homeserver);
+        let (homeserver, _) = get_homeserver_url(&config.server.homeserver, None);
+        let id = get_user_id(
+            id_number,
+            homeserver.as_str(),
+            &config.simulation.execution_id,
+        );
 
         Self {
             id,
@@ -158,6 +162,7 @@ impl User {
                         self.add_friend(pick_random_user(
                             config.simulation.max_users,
                             &config.server.homeserver,
+                            &config.simulation.execution_id,
                         ))
                         .await
                     }
@@ -208,8 +213,8 @@ impl User {
     }
 }
 
-fn get_user_id(id_number: usize, homeserver: &str) -> OwnedUserId {
-    <&UserId>::try_from(format!("@someuser_{id_number}:{homeserver}").as_str())
+fn get_user_id(id_number: usize, homeserver: &str, execution_id: &str) -> OwnedUserId {
+    <&UserId>::try_from(format!("@user_{id_number}_{execution_id}:{homeserver}").as_str())
         .unwrap()
         .to_owned()
 }
@@ -240,7 +245,8 @@ async fn pick_random_room(rooms: &RwLock<Vec<OwnedRoomId>>) -> Option<OwnedRoomI
         .map(|room| room.to_owned())
 }
 
-fn pick_random_user(max_users: usize, homeserver: &str) -> OwnedUserId {
+fn pick_random_user(max_users: usize, homeserver: &str, execution_id: &str) -> OwnedUserId {
     let id_number = rand::thread_rng().gen_range(0..max_users);
-    get_user_id(id_number, homeserver)
+    let (homeserver, _) = get_homeserver_url(homeserver, None);
+    get_user_id(id_number, homeserver.as_str(), execution_id)
 }

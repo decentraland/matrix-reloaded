@@ -6,6 +6,7 @@ use crate::text::create_simulation_bar;
 use crate::text::create_users_bar;
 use crate::text::default_spinner;
 use crate::text::spin_for;
+use crate::time::execution_id;
 use crate::user::State;
 use crate::user::User;
 use futures::future::join_all;
@@ -177,7 +178,7 @@ impl Simulation {
 
         let output_dir = format!("{output_folder}/{homeserver}");
 
-        report.generate(output_dir.as_str());
+        report.generate(output_dir.as_str(), &execution_id());
     }
 }
 

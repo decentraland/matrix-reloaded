@@ -204,8 +204,8 @@ impl Client {
         let response = client.sync_once(SyncSettings::default()).await;
         let (tx, _) = &self.sync_channel;
 
-        add_room_message_event_handler(&client, tx, user_id, &self.event_notifier).await;
         add_invite_event_handler(&client, tx, user_id).await;
+        add_room_message_event_handler(&client, tx, user_id, &self.event_notifier).await;
 
         let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
 
@@ -265,7 +265,8 @@ impl Client {
         // try to create room (maybe it already exists, in that case we ignore that)
         let client = self.inner.lock().await;
         let alias = user_id.localpart();
-        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(alias) });
+        let invites = [user_id.to_owned()];
+        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(alias), invite: &invites, is_direct: true });
 
         let now = Instant::now();
         let response = client.create_room(request).await;
@@ -383,8 +384,8 @@ async fn on_room_invite(
     if room_member.state_key != user_id {
         return;
     }
-
     if let Room::Invited(room) = room {
+        log::debug!("user {} was invited to room {}!", user_id, room.room_id());
         sender
             .send(SyncEvent::Invite(room.room_id().to_owned()))
             .await
@@ -404,7 +405,7 @@ async fn on_room_message(
             if event.sender.localpart() == user_id.localpart() {
                 return;
             }
-            log::info!(
+            log::debug!(
                 "Message received! next time user {} will have someone to respond :D",
                 user_id
             );

@@ -1,3 +1,4 @@
+use crate::time::time_now;
 use clap::Parser;
 use config::{ConfigError, File};
 use regex::Regex;
@@ -8,13 +9,13 @@ use std::time::Duration;
 
 /// This function returns homeserver domain and url, ex:
 ///  - get_homeserver_url("matrix.domain.com") => ("matrix.domain.com", "https://matrix.domain.com")
-pub fn get_homeserver_url(homeserver: &str, protocol: Option<&str>) -> (String, String) {
+pub fn get_homeserver_url(homeserver: &str, default_protocol: Option<&str>) -> (String, String) {
     let regex = Regex::new(r"https?://").unwrap();
     if regex.is_match(homeserver) {
         let parts: Vec<&str> = regex.splitn(homeserver, 2).collect();
         (parts[1].to_string(), homeserver.to_string())
     } else {
-        let protocol = protocol.unwrap_or("https");
+        let protocol = default_protocol.unwrap_or("https");
         (homeserver.to_string(), format!("{protocol}://{homeserver}"))
     }
 }
@@ -65,6 +66,7 @@ pub struct Simulation {
     #[serde(rename = "grace_period_duration_in_secs")]
     pub grace_period_duration: Duration,
     pub output: String,
+    pub execution_id: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -92,6 +94,7 @@ impl Config {
             .set_override_option("simluation.max_users", args.max_users)?
             .set_override_option("simluation.users_per_tick", args.users_per_tick)?
             .set_override_option("simulation.output", args.output)?
+            .set_default("simulation.execution_id", time_now().to_string())?
             .build()?;
 
         log::debug!("Config: {:#?}", config);
