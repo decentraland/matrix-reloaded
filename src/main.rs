@@ -1,7 +1,7 @@
-use std::time::Duration;
 use config::ConfigError;
 use matrix_reloaded::{configuration::Config, simulation::Simulation};
 use miette::Result;
+use std::time::Duration;
 use tokio_graceful_shutdown::SubsystemHandle;
 use tokio_graceful_shutdown::Toplevel;
 
