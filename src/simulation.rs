@@ -1,21 +1,17 @@
 use crate::configuration::Config;
 use crate::events::Event;
 use crate::events::EventCollector;
+use crate::progress::create_progress;
+use crate::progress::Progress;
 use crate::report::Report;
-use crate::text::create_simulation_bar;
-use crate::text::create_users_bar;
 use crate::text::default_spinner;
 use crate::text::spin_for;
 use crate::time::execution_id;
 use crate::user::State;
 use crate::user::User;
 use futures::future::join_all;
-use indicatif::MultiProgress;
-use indicatif::ProgressBar;
 use matrix_sdk::locks::RwLock;
 use rand::prelude::IteratorRandom;
-use std::env;
-use std::thread;
 use std::{collections::BTreeMap, ops::Sub, sync::Arc, time::Instant};
 use tokio::{
     sync::mpsc::{self, Sender},
@@ -43,24 +39,22 @@ impl Entity {
 pub struct Simulation {
     config: Arc<Config>,
     entities: BTreeMap<usize, Entity>,
-    progress: SimulationProgress,
+    progress: Box<dyn Progress>,
 }
 
 impl Simulation {
-    pub fn with_config(config: Config) -> Self {
+    pub fn with(config: Config) -> Self {
         let entities = (0..config.simulation.max_users).fold(BTreeMap::new(), |mut map, i| {
             map.insert(i, Entity::waiting());
             map
         });
-        let progress =
-            SimulationProgress::new(config.simulation.ticks, config.simulation.max_users);
+
         Self {
             entities,
+            progress: create_progress(config.simulation.ticks, config.simulation.max_users),
             config: Arc::new(config),
-            progress,
         }
     }
-
     fn pick_random_entity(&mut self) -> (usize, &Entity) {
         let mut rng = rand::thread_rng();
         let id = (0..self.config.simulation.max_users)
@@ -156,7 +150,7 @@ impl Simulation {
         }
     }
 
-    async fn track_users(&self) {
+    async fn track_users(&mut self) {
         let mut syncing = 0;
 
         for entity in self.entities.values() {
@@ -179,56 +173,5 @@ impl Simulation {
         let output_dir = format!("{output_folder}/{homeserver}");
 
         report.generate(output_dir.as_str(), &execution_id());
-    }
-}
-
-struct SimulationProgress {
-    multi_progress: Arc<MultiProgress>,
-    progress_bar: ProgressBar,
-    users_bar: ProgressBar,
-}
-
-impl SimulationProgress {
-    fn new(total_ticks: usize, max_users: usize) -> Self {
-        let multi_progress = Arc::new(MultiProgress::new());
-        let progress_bar = multi_progress.add(create_simulation_bar(total_ticks));
-        let users_bar = multi_progress.add(create_users_bar(max_users));
-        Self {
-            multi_progress,
-            progress_bar,
-            users_bar,
-        }
-    }
-
-    fn start(&self) {
-        let is_ci = env::var("CI").is_ok();
-        if !is_ci {
-            let m = self.multi_progress.clone();
-            thread::spawn(move || m.join_and_clear().unwrap());
-        }
-    }
-
-    fn tick(&self, users_syncing: u64) {
-        let is_ci = env::var("CI").is_ok();
-        if is_ci {
-            println!("users syncing: {users_syncing}");
-        } else {
-            self.progress_bar.inc(1);
-            self.users_bar.set_position(users_syncing);
-        }
-    }
-
-    fn finish(&self) {
-        self.progress_bar.disable_steady_tick();
-        self.users_bar.disable_steady_tick();
-
-        let is_ci = env::var("CI").is_ok();
-        if !is_ci {
-            self.progress_bar
-                .finish_with_message("Simulation finished!");
-
-            self.users_bar.finish_and_clear();
-            self.multi_progress.join_and_clear().unwrap();
-        }
     }
 }

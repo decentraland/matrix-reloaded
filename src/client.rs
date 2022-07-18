@@ -209,7 +209,7 @@ impl Client {
 
         let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
 
-        tokio::spawn(sync_until_cancel(client, check_cancel).await);
+        tokio::spawn(sync_until_cancel(&client, check_cancel).await);
 
         if let Ok(res) = response {
             let joined_rooms = res.rooms.join.keys().cloned().collect::<Vec<_>>();
@@ -224,6 +224,10 @@ impl Client {
         }
     }
 
+    /// # Panics
+    ///
+    /// If room_id is not one of the joined rooms or couldn't retrieve it.
+    ///
     pub async fn send_message(&self, room_id: &RoomId, message: String) {
         let client = self.inner.lock().await;
 
@@ -278,11 +282,18 @@ impl Client {
             .await
             .expect("channel should not be closed");
 
-        if let Err(e) = response {
-            self.event_notifier
-                .send(Event::Error((UserRequest::CreateRoom, e)))
-                .await
-                .expect("channel should not be closed");
+        match response {
+            Err(Api(Server(Known(RumaApiError::ClientApi(Error {
+                kind: ErrorKind::RoomInUse,
+                ..
+            }))))) => log::debug!("CreateRoom failed but it was already created"),
+            Err(e) => {
+                self.event_notifier
+                    .send(Event::Error((UserRequest::CreateRoom, e)))
+                    .await
+                    .expect("channel should not be closed");
+            }
+            Ok(_) => {}
         }
     }
 
@@ -308,7 +319,7 @@ impl Client {
 }
 
 async fn sync_until_cancel(
-    client: futures::lock::MutexGuard<'_, matrix_sdk::Client>,
+    client: &matrix_sdk::Client,
     check_cancel: async_channel::Receiver<bool>,
 ) -> impl Future<Output = ()> {
     // we are not cloning the mutex to avoid locking it forever
@@ -333,7 +344,7 @@ async fn sync_until_cancel(
 }
 
 async fn add_room_message_event_handler(
-    client: &futures::lock::MutexGuard<'_, matrix_sdk::Client>,
+    client: &matrix_sdk::Client,
     tx: &Sender<SyncEvent>,
     user_id: &UserId,
     notifier: &Notifier,
@@ -356,7 +367,7 @@ async fn add_room_message_event_handler(
 }
 
 async fn add_invite_event_handler(
-    client: &futures::lock::MutexGuard<'_, matrix_sdk::Client>,
+    client: &matrix_sdk::Client,
     tx: &Sender<SyncEvent>,
     user_id: &UserId,
 ) {
@@ -381,6 +392,7 @@ async fn on_room_invite(
     sender: Sender<SyncEvent>,
     user_id: OwnedUserId,
 ) {
+    // ignore invitation when it doesn't affect the current user
     if room_member.state_key != user_id {
         return;
     }
@@ -405,10 +417,15 @@ async fn on_room_message(
             if event.sender.localpart() == user_id.localpart() {
                 return;
             }
+            room.read_receipt(&event.event_id)
+                .await
+                .expect("can send read receipt");
+
             log::debug!(
                 "Message received! next time user {} will have someone to respond :D",
                 user_id
             );
+
             sender
                 .send(SyncEvent::Message(room.room_id().to_owned(), text.body))
                 .await

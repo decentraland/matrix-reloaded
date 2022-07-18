@@ -1,5 +1,4 @@
 use std::time::Duration;
-
 use config::ConfigError;
 use matrix_reloaded::{configuration::Config, simulation::Simulation};
 use miette::Result;
@@ -22,7 +21,7 @@ async fn main() -> Result<()> {
 async fn simulation(_: SubsystemHandle) -> Result<(), ConfigError> {
     log::debug!("Simulation started.");
 
-    let mut simulation = Simulation::with_config(Config::new()?);
+    let mut simulation = Simulation::with(Config::new()?);
     simulation.run().await;
 
     log::debug!("Simulation stopped.");
