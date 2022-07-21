@@ -1,101 +1,439 @@
-use std::collections::BTreeMap;
-
-use async_trait::async_trait;
-use matrix_sdk::reqwest::StatusCode;
-use matrix_sdk::ruma::api::client::config::get_global_account_data::v3::{
-    Request as GetAccountDataRequest, Response as GetAccountDataResponse,
+use crate::{
+    configuration::{get_homeserver_url, Config},
+    events::{Event, Notifier, SyncEvent, UserRequest},
 };
-use matrix_sdk::ruma::api::client::config::set_global_account_data::v3::{
-    Request as SetAccountDataRequest, Response as SetAccountDataResponse,
+use async_channel::Sender;
+use futures::{lock::Mutex, Future};
+use matrix_sdk::ruma::{
+    api::{
+        client::{
+            account::register::v3::Request as RegistrationRequest,
+            error::ErrorKind,
+            room::create_room::v3::Request as CreateRoomRequest,
+            uiaa::{AuthData, Dummy},
+            Error,
+        },
+        error::FromHttpResponseError::Server,
+        error::ServerError::Known,
+    },
+    assign,
+    events::{
+        room::{
+            member::StrippedRoomMemberEvent,
+            message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent},
+        },
+        AnyMessageLikeEventContent,
+    },
+    OwnedRoomId, OwnedUserId, RoomId, UserId,
 };
-use matrix_sdk::ruma::api::client::presence::set_presence::v3::Request as SetPresenceRequest;
-use matrix_sdk::ruma::api::client::presence::set_presence::v3::Response as SetPresenceResponse;
-use matrix_sdk::ruma::api::error::FromHttpResponseError::Server;
-use matrix_sdk::ruma::api::error::ServerError::Known;
-use matrix_sdk::ruma::events::direct::DirectEventContent;
-use matrix_sdk::ruma::events::GlobalAccountDataEventType;
-use matrix_sdk::ruma::presence::PresenceState;
-use matrix_sdk::ruma::{self, OwnedRoomId, OwnedUserId};
-use matrix_sdk::HttpError::Api;
-use matrix_sdk::{Client, RumaApiError};
-use matrix_sdk::{HttpError, HttpResult};
+use matrix_sdk::{
+    config::{RequestConfig, SyncSettings},
+    room::Room,
+    ClientBuildError,
+    Error::Http,
+    HttpError::Api,
+    LoopCtrl, RumaApiError,
+};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-#[async_trait]
-pub trait ClientExt {
-    async fn send_presence(&self, online: bool) -> HttpResult<SetPresenceResponse>;
-    async fn get_account_data(&self) -> HttpResult<GetAccountDataResponse>;
-    async fn set_account_data(
-        &self,
-        data: &DirectEventContent,
-    ) -> HttpResult<SetAccountDataResponse>;
-    async fn add_room_to_list(
-        &self,
-        friend_user_id: OwnedUserId,
-        room_id: OwnedRoomId,
-    ) -> Result<(), HttpError>;
+// unbounded channel used to queue sync events like room messages or invites
+type SyncChannel = (
+    async_channel::Sender<SyncEvent>,
+    async_channel::Receiver<SyncEvent>,
+);
+
+#[derive(Clone, Debug)]
+pub struct Client {
+    inner: Arc<Mutex<matrix_sdk::Client>>,
+    event_notifier: Notifier,
+    sync_channel: SyncChannel,
 }
 
-#[async_trait]
-impl ClientExt for Client {
-    async fn send_presence(&self, online: bool) -> HttpResult<SetPresenceResponse> {
-        let user_id = self.user_id().await.ok_or(HttpError::UserIdRequired)?;
-        let presence = if online {
-            PresenceState::Online
+pub enum LoginResult {
+    Ok,
+    NotRegistered,
+    Failed,
+}
+
+pub enum RegisterResult {
+    Ok,
+    Failed,
+}
+
+pub enum SyncResult {
+    Ok {
+        joined_rooms: Vec<OwnedRoomId>,
+        invited_rooms: Vec<OwnedRoomId>,
+        cancel_sync: Sender<bool>,
+    },
+    Failed,
+}
+
+const PASSWORD: &str = "asdfasdf";
+
+impl Client {
+    pub async fn new(notifier: Notifier, config: &Config) -> Self {
+        let inner = Self::create(
+            &config.server.homeserver,
+            config.requests.retry_enabled,
+            config.server.wk_login,
+        )
+        .await
+        .expect("Couldn't create client");
+        let channel = async_channel::unbounded::<SyncEvent>();
+        Self {
+            inner: Arc::new(Mutex::new(inner)),
+            event_notifier: notifier,
+            sync_channel: channel,
+        }
+    }
+
+    async fn create(
+        homeserver_url: &str,
+        retry_enabled: bool,
+        respect_login_well_known: bool,
+    ) -> Result<matrix_sdk::Client, ClientBuildError> {
+        let (_, homeserver) = get_homeserver_url(homeserver_url, None);
+
+        let timeout = Duration::from_secs(30);
+
+        let request_config = if retry_enabled {
+            RequestConfig::new().retry_timeout(timeout)
         } else {
-            PresenceState::Offline
+            RequestConfig::new().disable_retry().timeout(timeout)
         };
-        let request = SetPresenceRequest::new(&user_id, presence);
-        self.send(request, None).await
+
+        let client = matrix_sdk::Client::builder()
+            .request_config(request_config)
+            .homeserver_url(homeserver)
+            .respect_login_well_known(respect_login_well_known)
+            .build()
+            .await;
+
+        client
     }
 
-    async fn get_account_data(&self) -> HttpResult<GetAccountDataResponse> {
-        let user_id = self.user_id().await.ok_or(HttpError::UserIdRequired)?;
-        let request = GetAccountDataRequest::new(&user_id, "m.direct");
-        self.send(request, None).await
-    }
-    async fn set_account_data(
-        &self,
-        data: &DirectEventContent,
-    ) -> HttpResult<SetAccountDataResponse> {
-        let user_id = self.user_id().await.ok_or(HttpError::UserIdRequired)?;
-        let request = SetAccountDataRequest::new(data, &user_id)
-            .ok()
-            .ok_or(HttpError::UnableToCloneRequest)?;
-        let response = self.send(request, None).await;
-        response
-    }
+    pub async fn read_sync_events(&self) -> Vec<SyncEvent> {
+        let (_, rv) = &self.sync_channel;
+        let mut events = vec![];
 
-    async fn add_room_to_list(
-        &self,
-        friend_user_id: OwnedUserId,
-        room_id: OwnedRoomId,
-    ) -> Result<(), HttpError> {
-        let response = self.get_account_data().await;
-        let content = match response {
-            Ok(response) => {
-                let account_data = response.account_data;
-                let mut content = account_data
-                    .cast::<DirectEventContent>()
-                    .deserialize_content(GlobalAccountDataEventType::Direct)
-                    .expect("Received account_data should be deserializable to DirectEventContent");
-                content.entry(friend_user_id).or_default().push(room_id);
-                Ok(content)
+        while !rv.is_empty() {
+            if let Ok(event) = rv.recv().await {
+                events.push(event);
             }
-            Err(Api(Server(Known(RumaApiError::ClientApi(ruma::api::client::Error {
-                kind: _,
-                message: _,
-                status_code: StatusCode::NOT_FOUND,
-            }))))) => Ok(DirectEventContent(BTreeMap::new())),
-            Err(http_error) => Err(http_error),
-        };
-        match content {
-            Ok(content) => {
-                if let Err(e) = self.set_account_data(&content).await {
-                    return Err(e);
+        }
+        events
+    }
+
+    pub async fn reset(&mut self, config: &Config) {
+        let client = Self::create(
+            &config.server.homeserver,
+            config.requests.retry_enabled,
+            config.server.wk_login,
+        )
+        .await
+        .expect("Couldn't create client");
+        self.inner = Arc::new(Mutex::new(client));
+    }
+
+    pub async fn login(&self, id: &UserId) -> LoginResult {
+        let client = self.inner.lock().await;
+        let now = Instant::now();
+        let response = client.login(id.localpart(), PASSWORD, None, None).await;
+        self.event_notifier
+            .send(Event::RequestDuration((UserRequest::Login, now.elapsed())))
+            .await
+            .expect("channel should not be closed");
+        match response {
+            Ok(_) => LoginResult::Ok,
+            Err(Http(Api(Server(Known(RumaApiError::ClientApi(Error {
+                kind: ErrorKind::NotFound,
+                ..
+            })))))) => LoginResult::NotRegistered,
+            Err(Http(Api(Server(Known(RumaApiError::ClientApi(Error {
+                kind: ErrorKind::Forbidden,
+                ..
+            })))))) => LoginResult::NotRegistered,
+            Err(e) => {
+                if let Http(e) = e {
+                    self.event_notifier
+                        .send(Event::Error((UserRequest::Login, e)))
+                        .await
+                        .expect("channel should not be closed");
+                }
+                LoginResult::Failed
+            }
+        }
+    }
+
+    pub async fn register(&self, id: &UserId) -> RegisterResult {
+        let client = self.inner.lock().await;
+
+        let req = assign!(RegistrationRequest::new(), {
+            username: Some(id.localpart()),
+            password: Some(PASSWORD),
+            auth: Some(AuthData::Dummy(Dummy::new()))
+        });
+        let now = Instant::now();
+        let response = client.register(req).await;
+        self.event_notifier
+            .send(Event::RequestDuration((
+                UserRequest::Register,
+                now.elapsed(),
+            )))
+            .await
+            .expect("channel should not be closed");
+
+        if let Err(e) = response {
+            self.event_notifier
+                .send(Event::Error((UserRequest::Login, e)))
+                .await
+                .expect("channel should not be closed");
+            RegisterResult::Failed
+        } else {
+            RegisterResult::Ok
+        }
+    }
+
+    /// Do initial sync and return rooms and new invites. Then register event handler for future syncs and notify events.
+    pub async fn sync(&self, user_id: &UserId) -> SyncResult {
+        let client = self.inner.lock().await;
+        let response = client.sync_once(SyncSettings::default()).await;
+        let (tx, _) = &self.sync_channel;
+
+        add_invite_event_handler(&client, tx, user_id).await;
+        add_room_message_event_handler(&client, tx, user_id, &self.event_notifier).await;
+
+        let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
+
+        tokio::spawn(sync_until_cancel(&client, check_cancel).await);
+
+        if let Ok(res) = response {
+            let joined_rooms = res.rooms.join.keys().cloned().collect::<Vec<_>>();
+            let invited_rooms = res.rooms.invite.keys().cloned().collect::<Vec<_>>();
+            SyncResult::Ok {
+                joined_rooms,
+                invited_rooms,
+                cancel_sync,
+            }
+        } else {
+            SyncResult::Failed
+        }
+    }
+
+    /// # Panics
+    ///
+    /// If room_id is not one of the joined rooms or couldn't retrieve it.
+    ///
+    pub async fn send_message(&self, room_id: &RoomId, message: String) {
+        let client = self.inner.lock().await;
+
+        let content =
+            AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(message));
+
+        let room = client
+            .get_joined_room(room_id)
+            .unwrap_or_else(|| panic!("cannot get joined room {}", room_id));
+
+        let now = Instant::now();
+        let response = room.send(content, None).await;
+        self.event_notifier
+            .send(Event::RequestDuration((
+                UserRequest::SendMessage,
+                now.elapsed(),
+            )))
+            .await
+            .expect("channel should not be closed");
+
+        match response {
+            Ok(response) => {
+                self.event_notifier
+                    .send(Event::MessageSent(response.event_id.to_string()))
+                    .await
+                    .expect("channel open");
+            }
+            Err(Http(e)) => {
+                self.event_notifier
+                    .send(Event::Error((UserRequest::Login, e)))
+                    .await
+                    .expect("channel open");
+            }
+            _ => {}
+        }
+    }
+
+    pub async fn add_friend(&self, user_id: &UserId) {
+        // try to create room (maybe it already exists, in that case we ignore that)
+        let client = self.inner.lock().await;
+        let alias = user_id.localpart();
+        let invites = [user_id.to_owned()];
+        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(alias), invite: &invites, is_direct: true });
+
+        let now = Instant::now();
+        let response = client.create_room(request).await;
+        self.event_notifier
+            .send(Event::RequestDuration((
+                UserRequest::CreateRoom,
+                now.elapsed(),
+            )))
+            .await
+            .expect("channel should not be closed");
+
+        match response {
+            Err(Api(Server(Known(RumaApiError::ClientApi(Error {
+                kind: ErrorKind::RoomInUse,
+                ..
+            }))))) => log::debug!("CreateRoom failed but it was already created"),
+            Err(e) => {
+                self.event_notifier
+                    .send(Event::Error((UserRequest::CreateRoom, e)))
+                    .await
+                    .expect("channel should not be closed");
+            }
+            Ok(_) => {}
+        }
+    }
+
+    pub async fn join_room(&self, room_id: &RoomId) {
+        let client = self.inner.lock().await;
+
+        let now = Instant::now();
+        let response = client.join_room_by_id(room_id).await;
+        self.event_notifier
+            .send(Event::RequestDuration((
+                UserRequest::JoinRoom,
+                now.elapsed(),
+            )))
+            .await
+            .expect("channel should not be closed");
+        if let Err(e) = response {
+            self.event_notifier
+                .send(Event::Error((UserRequest::JoinRoom, e)))
+                .await
+                .expect("channel should not be closed");
+        }
+    }
+}
+
+async fn sync_until_cancel(
+    client: &matrix_sdk::Client,
+    check_cancel: async_channel::Receiver<bool>,
+) -> impl Future<Output = ()> {
+    // we are not cloning the mutex to avoid locking it forever
+    let client = client.clone();
+    async move {
+        client
+            .sync_with_callback(SyncSettings::default(), {
+                let check_cancel = check_cancel.clone();
+                move |_| {
+                    let check_cancel = check_cancel.clone();
+                    async move {
+                        if check_cancel.try_recv().is_ok() {
+                            LoopCtrl::Break
+                        } else {
+                            LoopCtrl::Continue
+                        }
+                    }
+                }
+            })
+            .await;
+    }
+}
+
+async fn add_room_message_event_handler(
+    client: &matrix_sdk::Client,
+    tx: &Sender<SyncEvent>,
+    user_id: &UserId,
+    notifier: &Notifier,
+) {
+    client
+        .register_event_handler({
+            let tx = tx.clone();
+            let user_id = user_id.to_owned();
+            let notifier = notifier.clone();
+            move |event, room| {
+                let tx = tx.clone();
+                let user_id = user_id.clone();
+                let notifier = notifier.clone();
+                async move {
+                    on_room_message(event, room, tx, user_id, &notifier).await;
                 }
             }
-            Err(e) => return Err(e),
+        })
+        .await;
+}
+
+async fn add_invite_event_handler(
+    client: &matrix_sdk::Client,
+    tx: &Sender<SyncEvent>,
+    user_id: &UserId,
+) {
+    client
+        .register_event_handler({
+            let tx = tx.clone();
+            let user_id = user_id.to_owned();
+            move |event, room| {
+                let tx = tx.clone();
+                let user_id = user_id.clone();
+                async move {
+                    on_room_invite(event, room, tx, user_id).await;
+                }
+            }
+        })
+        .await;
+}
+
+async fn on_room_invite(
+    room_member: StrippedRoomMemberEvent,
+    room: Room,
+    sender: Sender<SyncEvent>,
+    user_id: OwnedUserId,
+) {
+    // ignore invitation when it doesn't affect the current user
+    if room_member.state_key != user_id {
+        return;
+    }
+    if let Room::Invited(room) = room {
+        log::debug!("user {} was invited to room {}!", user_id, room.room_id());
+        sender
+            .send(SyncEvent::Invite(room.room_id().to_owned()))
+            .await
+            .expect("channel to be open");
+    }
+}
+
+async fn on_room_message(
+    event: OriginalSyncRoomMessageEvent,
+    room: Room,
+    sender: Sender<SyncEvent>,
+    user_id: OwnedUserId,
+    notifier: &Notifier,
+) {
+    if let Room::Joined(room) = room {
+        if let MessageType::Text(text) = event.content.msgtype {
+            if event.sender.localpart() == user_id.localpart() {
+                return;
+            }
+            room.read_receipt(&event.event_id)
+                .await
+                .expect("can send read receipt");
+
+            log::debug!(
+                "Message received! next time user {} will have someone to respond :D",
+                user_id
+            );
+
+            sender
+                .send(SyncEvent::Message(room.room_id().to_owned(), text.body))
+                .await
+                .expect("channel open");
+            notifier
+                .send(Event::MessageReceived(event.event_id.to_string()))
+                .await
+                .expect("channel open");
         }
-        Ok(())
     }
 }

@@ -7,33 +7,30 @@ on:
         description: "Homeserver URL (with or without https)"
         required: true
         default: "synapse.decentraland.zone"
-      total_steps:
-        description: "Total steps"
+      ticks:
+        description: "Total ticks"
         required: true
-        default: "50"
-      users_per_step:
-        description: "Users per step"
+        default: "4000"
+      max_users:
+        description: "Max users"
         required: true
-        default: "100"
-      user_creation_throughput:
-        description: "Users creation throughput"
-        required: true
-        default: "10"
+        default: "5000"
       tick_duration_in_secs:
         description: "Tick duration where users interact each other"
         required: true
         default: "10"
-      step_duration_in_secs:
-        description: "Step total duration"
+      users_per_tick:
+        description: "Users to act per tick"
         required: true
-        default: "60"
-      waiting_period:
-        description: "Time to wait for all messages to be delivered, after that time they are considered as lost"
+        default: "15"
+      grace_period_duration_in_secs:
+        description: "Time to wait for all messages to be delivered"
         required: true
-        default: "60"
+        default: "30"
 
 env:
   CARGO_TERM_COLOR: always
+  CI: 1
 
 jobs:
   run:
@@ -47,48 +44,37 @@ jobs:
           toolchain: stable
           override: true
       - uses: Swatinem/rust-cache@v1.3.0
-      - name: Copy Config.example.toml to default path
-        uses: canastro/copy-file-action@master
-        with:
-          source: "Config.example.toml"
-          target: "Config.toml"
-      - name: Set total_steps
+      - name: Set ticks
         uses: ciiiii/toml-editor@1.0.0
         with:
-          file: "Config.toml"
-          key: "total_steps"
-          value: ${{ github.event.inputs.total_steps }}
-      - name: Set users_per_step
+          file: "configuration.toml"
+          key: "simulation.ticks"
+          value: ${{ github.event.inputs.ticks }}
+      - name: Set max_users
         uses: ciiiii/toml-editor@1.0.0
         with:
-          file: "Config.toml"
-          key: "users_per_step"
-          value: ${{ github.event.inputs.users_per_step }}
-      - name: Set user_creation_throughput
-        uses: ciiiii/toml-editor@1.0.0
-        with:
-          file: "Config.toml"
-          key: "user_creation_throughput"
-          value: ${{ github.event.inputs.user_creation_throughput }}
+          file: "configuration.toml"
+          key: "simulation.max_users"
+          value: ${{ github.event.inputs.max_users }}
       - name: Set tick_duration_in_secs
         uses: ciiiii/toml-editor@1.0.0
         with:
-          file: "Config.toml"
-          key: "tick_duration_in_secs"
+          file: "configuration.toml"
+          key: "simulation.tick_duration_in_secs"
           value: ${{ github.event.inputs.tick_duration_in_secs }}
-      - name: Set step_duration_in_secs
+      - name: Set users_per_tick
         uses: ciiiii/toml-editor@1.0.0
         with:
-          file: "Config.toml"
-          key: "step_duration_in_secs"
-          value: ${{ github.event.inputs.step_duration_in_secs }}
-      - name: Set waiting_period
+          file: "configuration.toml"
+          key: "simulation.users_per_tick"
+          value: ${{ github.event.inputs.users_per_tick }}
+      - name: Set grace_period_duration_in_secs
         uses: ciiiii/toml-editor@1.0.0
         with:
-          file: "Config.toml"
-          key: "waiting_period"
-          value: ${{ github.event.inputs.waiting_period }}
+          file: "configuration.toml"
+          key: "simulation.grace_period_duration_in_secs"
+          value: ${{ github.event.inputs.grace_period_duration_in_secs }}
       - uses: actions-rs/cargo@v1
         with:
           command: run
-          args: --release -- --run --homeserver ${{ github.event.inputs.homeserver }}
+          args: --release -- -h ${{ github.event.inputs.homeserver }}

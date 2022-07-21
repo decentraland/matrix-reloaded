@@ -1,5 +1,7 @@
 # Matrix Reloaded
 
+A tool that can be used to simulate Matrix users behavior for some period of time.
+
 ## Setup
 
 Before running the commands below remember to install the linker used by your OS:
@@ -36,19 +38,18 @@ brew install michaeleisel/zld/zld
 
 ## Quick start
 
-1. First of all, copy the [`Config.example.toml`](Config.example.toml) file in the root directory of the project to `Config.toml`, this file will be ignored in the git repository.
+1. Usage:
 
-1. Make sure users are available for the server you will be testing by checking the [`users.json`](users.json) file, or create them by running:
+```
+cargo run -- [OPTIONS] --homeserver <HOMESERVER> [OUTPUT]
 
-   ```
-   cargo run --release -- --create --amount NUMBER_OF_USERS_TO_CREATE --homeserver HOST
-   ```
-
-1. Run this command specifying the Matrix instance to be tested for the `homeserver` argument:
-
-   ```bash
-   cargo run --release -- --run --homeserver HOST
-   ```
+OPTIONS:
+    -d, --duration <DURATION>                Tick duration in seconds
+    -h, --homeserver <HOMESERVER>            Homeserver to use during the simulation
+    -m, --max-users <MAX_USERS>              Max number of users for current simulation
+    -t, --ticks <TICKS>                      Number of times to tick during the simulation
+    -u, --users-per-tick <USERS_PER_TICK>    Number of users to act during the simulation
+```
 
 ### Sample results
 
@@ -56,23 +57,23 @@ After running the test, a directory with the current run will be created in the 
 
 ```yaml
 ---
-homeserver: HOMESERVER_URL
-step: 1
-step_users: 20
-step_friendships: 19
-report:
-  requests_average_time:
-    create_room: 4128
-    login: 2160
-    send_message: 471
-    join_room: 331
-  http_errors_per_request: {}
-  message_delivery_average_time: 54
-  messages_sent: 96
-  lost_messages: 0
+requests_average_time:
+  login: 2434
+  create_room: 1472
+  send_message: 972
+total_requests:
+  create_room: 16
+  send_message: 264
+  login: 201
+http_errors_per_request:
+  create_room_400: 8
+message_delivery_average_time: 2508
+messages_sent: 151
+messages_not_sent: 0
+real_time_messages: 113
 ```
 
-For more options and parameters to be configured please see `cargo run -- --help` and the [Config.example.toml](/Config.example.toml).
+For more options and parameters to be configured please see `cargo run -- --help` and the [configuration.toml](/configuration.toml).
 
 ## Contact me
 
