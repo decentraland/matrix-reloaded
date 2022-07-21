@@ -1,6 +1,7 @@
 use crate::{
     configuration::{get_homeserver_url, Config},
     events::{Event, Notifier, SyncEvent, UserRequest},
+    text::get_random_string,
 };
 use async_channel::Sender;
 use futures::{lock::Mutex, Future};
@@ -9,12 +10,15 @@ use matrix_sdk::ruma::{
         client::{
             account::register::v3::Request as RegistrationRequest,
             error::ErrorKind,
+            membership::join_room_by_id::v3::Request as JoinRoomRequest,
+            presence::set_presence::v3::Request as UpdatePresenceRequest,
             room::create_room::v3::Request as CreateRoomRequest,
             uiaa::{AuthData, Dummy},
             Error,
         },
-        error::FromHttpResponseError::Server,
+        error::FromHttpResponseError::{self, Server},
         error::ServerError::Known,
+        OutgoingRequest,
     },
     assign,
     events::{
@@ -24,6 +28,7 @@ use matrix_sdk::ruma::{
         },
         AnyMessageLikeEventContent,
     },
+    presence::PresenceState,
     OwnedRoomId, OwnedUserId, RoomId, UserId,
 };
 use matrix_sdk::{
@@ -31,9 +36,10 @@ use matrix_sdk::{
     room::Room,
     ClientBuildError,
     Error::Http,
-    HttpError::Api,
+    HttpError::{self, Api},
     LoopCtrl, RumaApiError,
 };
+use std::fmt::Debug;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -267,12 +273,12 @@ impl Client {
 
     pub async fn add_friend(&self, user_id: &UserId) {
         // try to create room (maybe it already exists, in that case we ignore that)
-        let client = self.inner.lock().await;
         let alias = user_id.localpart();
         let invites = [user_id.to_owned()];
         let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(alias), invite: &invites, is_direct: true });
 
         let now = Instant::now();
+        let client = self.inner.lock().await;
         let response = client.create_room(request).await;
         self.event_notifier
             .send(Event::RequestDuration((
@@ -298,20 +304,35 @@ impl Client {
     }
 
     pub async fn join_room(&self, room_id: &RoomId) {
-        let client = self.inner.lock().await;
+        let request = JoinRoomRequest::new(room_id);
+        self.send_and_notify(request, UserRequest::JoinRoom).await;
+    }
 
+    pub async fn update_status(&self, user_id: &UserId) {
+        let random_status_msg = get_random_string();
+        let update_presence = assign!(UpdatePresenceRequest::new(user_id, PresenceState::Online), { status_msg: Some(random_status_msg.as_str())});
+        self.send_and_notify(update_presence, UserRequest::UpdateStatus)
+            .await;
+    }
+
+    async fn send_and_notify<Request>(&self, request: Request, user_request: UserRequest)
+    where
+        Request: OutgoingRequest + Debug,
+        HttpError: From<FromHttpResponseError<Request::EndpointError>>,
+    {
+        let client = self.inner.lock().await;
         let now = Instant::now();
-        let response = client.join_room_by_id(room_id).await;
+        let response = client.send(request, None).await;
         self.event_notifier
             .send(Event::RequestDuration((
-                UserRequest::JoinRoom,
+                user_request.clone(),
                 now.elapsed(),
             )))
             .await
             .expect("channel should not be closed");
         if let Err(e) = response {
             self.event_notifier
-                .send(Event::Error((UserRequest::JoinRoom, e)))
+                .send(Event::Error((user_request, e)))
                 .await
                 .expect("channel should not be closed");
         }
