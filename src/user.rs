@@ -131,6 +131,7 @@ impl User {
     // - react to received messages or invitations
     // - send a message to a friend
     // - add a new friend
+    // - update status
     // - log out (not so social)
     async fn socialize(&mut self, config: &Config) {
         log::debug!("user '{}' act => {}", self.id, "SOCIALIZE");
@@ -227,7 +228,7 @@ enum SocialAction {
     UpdateStatus,
 }
 
-// we probably want to distribute this actions and don't make them random (more send messages than logouts)
+// we probably want to distribute these actions and don't make them random (more send messages than logouts)
 fn pick_random_action() -> SocialAction {
     let mut rng = rand::thread_rng();
     if rng.gen_ratio(1, 50) {
