@@ -22,6 +22,7 @@ pub enum UserRequest {
     CreateRoom,
     JoinRoom,
     SendMessage,
+    UpdateStatus,
 }
 
 #[derive(Debug)]

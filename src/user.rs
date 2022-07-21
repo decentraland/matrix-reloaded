@@ -162,6 +162,7 @@ impl User {
                         .await
                     }
                     SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
+                    SocialAction::UpdateStatus => self.update_status().await,
                 };
             }
         } else {
@@ -206,6 +207,11 @@ impl User {
         cancel_sync.send(true).await.expect("channel open");
         self.state = State::LoggedOut;
     }
+
+    async fn update_status(&self) {
+        log::debug!("user '{}' act => {}", self.id, "UPDATE STATUS");
+        self.client.update_status(&self.id).await;
+    }
 }
 
 fn get_user_id(id_number: usize, homeserver: &str) -> OwnedUserId {
@@ -218,6 +224,7 @@ enum SocialAction {
     AddFriend,
     SendMessage,
     LogOut,
+    UpdateStatus,
 }
 
 // we probably want to distribute this actions and don't make them random (more send messages than logouts)
@@ -225,6 +232,8 @@ fn pick_random_action() -> SocialAction {
     let mut rng = rand::thread_rng();
     if rng.gen_ratio(1, 50) {
         SocialAction::LogOut
+    } else if rng.gen_ratio(1, 25) {
+        SocialAction::UpdateStatus
     } else if rng.gen_ratio(1, 3) {
         SocialAction::AddFriend
     } else {
