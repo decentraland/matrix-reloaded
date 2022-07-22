@@ -40,10 +40,7 @@ use matrix_sdk::{
     LoopCtrl, RumaApiError,
 };
 use std::fmt::Debug;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 // unbounded channel used to queue sync events like room messages or invites
 type SyncChannel = (
@@ -53,7 +50,7 @@ type SyncChannel = (
 
 #[derive(Clone, Debug)]
 pub struct Client {
-    inner: Arc<matrix_sdk::Client>,
+    inner: matrix_sdk::Client,
     event_notifier: Notifier,
     sync_channel: SyncChannel,
 }
@@ -91,7 +88,7 @@ impl Client {
         .expect("Couldn't create client");
         let channel = async_channel::unbounded::<SyncEvent>();
         Self {
-            inner: Arc::new(inner),
+            inner,
             event_notifier: notifier,
             sync_channel: channel,
         }
@@ -142,7 +139,7 @@ impl Client {
         )
         .await
         .expect("Couldn't create client");
-        self.inner = Arc::new(client);
+        self.inner = client;
     }
 
     pub async fn login(&self, id: &UserId) -> LoginResult {
@@ -240,7 +237,7 @@ impl Client {
 
         tokio::spawn(sync_until_cancel(client, check_cancel).await);
 
-        let res = response.unwrap();
+        let res = response.expect("already checked it is not an error");
         let joined_rooms = res.rooms.join.keys().cloned().collect::<Vec<_>>();
         let invited_rooms = res.rooms.invite.keys().cloned().collect::<Vec<_>>();
         SyncResult::Ok {
