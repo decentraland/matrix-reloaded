@@ -1,5 +1,5 @@
 [server]
-homeserver = "synapse.decentraland.zone"
+homeserver = "http://localhost"
 wk_login = true
 
 [simulation]

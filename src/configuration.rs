@@ -29,19 +29,19 @@ pub struct Args {
 
     /// Number of times to tick during the simulation
     #[clap(short, long, value_parser)]
-    ticks: Option<u64>,
+    ticks: Option<i64>,
 
     /// Tick duration in seconds
     #[clap(short, long, value_parser)]
-    duration: Option<u64>,
+    duration: Option<i64>,
 
     /// Number of users to act during the simulation
     #[clap(short, long, value_parser)]
-    users_per_tick: Option<u64>,
+    users_per_tick: Option<i64>,
 
     /// Max number of users for current simulation
     #[clap(short, long, value_parser)]
-    max_users: Option<u64>,
+    max_users: Option<i64>,
 
     /// Output folder for reports
     output: Option<String>,
@@ -89,10 +89,10 @@ impl Config {
         let config = config::Config::builder()
             .add_source(File::with_name("configuration"))
             .set_override("server.homeserver", args.homeserver)?
-            .set_override_option("simluation.ticks", args.ticks)?
-            .set_override_option("simluation.duration", args.duration)?
-            .set_override_option("simluation.max_users", args.max_users)?
-            .set_override_option("simluation.users_per_tick", args.users_per_tick)?
+            .set_override_option("simulation.ticks", args.ticks)?
+            .set_override_option("simulation.duration", args.duration)?
+            .set_override_option("simulation.max_users", args.max_users)?
+            .set_override_option("simulation.users_per_tick", args.users_per_tick)?
             .set_override_option("simulation.output", args.output)?
             .set_default("simulation.execution_id", time_now().to_string())?
             .build()?;
