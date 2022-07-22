@@ -45,14 +45,14 @@ impl User {
         Self {
             id,
             client: Client::new(notifier, config).await,
-            state: State::Unauthenticated,
+            state: State::Unregistered,
         }
     }
 
     pub async fn act(&mut self, context: &Context) {
         match &self.state {
-            State::Unauthenticated => self.log_in().await,
             State::Unregistered => self.register().await,
+            State::Unauthenticated => self.log_in().await,
             State::LoggedIn => self.sync().await,
             State::Sync { .. } => self.socialize(context).await,
             State::LoggedOut => self.restart(&context.config).await,
