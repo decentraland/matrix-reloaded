@@ -19,6 +19,7 @@ pub type Notifier = Sender<Event>;
 pub enum UserRequest {
     Register,
     Login,
+    InitialSync,
     CreateRoom,
     JoinRoom,
     SendMessage,

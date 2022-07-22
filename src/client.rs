@@ -207,7 +207,15 @@ impl Client {
     /// Do initial sync and return rooms and new invites. Then register event handler for future syncs and notify events.
     pub async fn sync(&self, user_id: &UserId) -> SyncResult {
         let client = self.inner.lock().await;
+        let now = Instant::now();
         let response = client.sync_once(SyncSettings::default()).await;
+        self.event_notifier
+            .send(Event::RequestDuration((
+                UserRequest::InitialSync,
+                now.elapsed(),
+            )))
+            .await
+            .expect("channel to be open");
         let (tx, _) = &self.sync_channel;
 
         add_invite_event_handler(&client, tx, user_id).await;
@@ -217,16 +225,24 @@ impl Client {
 
         tokio::spawn(sync_until_cancel(&client, check_cancel).await);
 
-        if let Ok(res) = response {
-            let joined_rooms = res.rooms.join.keys().cloned().collect::<Vec<_>>();
-            let invited_rooms = res.rooms.invite.keys().cloned().collect::<Vec<_>>();
-            SyncResult::Ok {
-                joined_rooms,
-                invited_rooms,
-                cancel_sync,
+        match response {
+            Ok(res) => {
+                let joined_rooms = res.rooms.join.keys().cloned().collect::<Vec<_>>();
+                let invited_rooms = res.rooms.invite.keys().cloned().collect::<Vec<_>>();
+                SyncResult::Ok {
+                    joined_rooms,
+                    invited_rooms,
+                    cancel_sync,
+                }
             }
-        } else {
-            SyncResult::Failed
+            Err(Http(e)) => {
+                self.event_notifier
+                    .send(Event::Error((UserRequest::Login, e)))
+                    .await
+                    .expect("channel open");
+                SyncResult::Failed
+            }
+            _ => SyncResult::Failed,
         }
     }
 

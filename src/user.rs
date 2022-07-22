@@ -106,7 +106,8 @@ impl User {
                     rooms: Arc::new(RwLock::new(rooms)),
                     events: Arc::new(Mutex::new(events)),
                     cancel_sync,
-                }
+                };
+                log::debug!("user '{}' now is syncing", self.id);
             }
             SyncResult::Failed => log::debug!(
                 "user {} couldn't make initial sync, will retry next time...",
