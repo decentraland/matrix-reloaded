@@ -55,16 +55,6 @@ impl Simulation {
             config: Arc::new(config),
         }
     }
-    fn pick_random_entity(&mut self) -> (usize, &Entity) {
-        let mut rng = rand::thread_rng();
-        let id = (0..self.config.simulation.max_users)
-            .choose(&mut rng)
-            .unwrap();
-        (
-            id,
-            self.entities.get(&id).expect("entity should be present"),
-        )
-    }
 
     pub async fn run(&mut self) {
         println!("server: {:#?}", self.config.server);
@@ -111,8 +101,10 @@ impl Simulation {
         let mut controller = TaskController::with_timeout(*tick_duration);
         let mut join_handles = vec![];
 
-        for _ in 0..self.config.simulation.users_per_tick {
-            let user_action = self.pick_user_action(tx, &mut controller).await;
+        let users = self.pick_users(self.config.simulation.users_per_tick);
+
+        for user in users {
+            let user_action = self.spawn_user_action(tx, &mut controller, user).await;
             if let Some(user_action) = user_action {
                 join_handles.push(user_action);
             }
@@ -124,25 +116,36 @@ impl Simulation {
         }
     }
 
-    async fn pick_user_action(
+    fn pick_users(&self, amount: usize) -> Vec<usize> {
+        let mut rng = rand::thread_rng();
+        (0..self.config.simulation.max_users).choose_multiple(&mut rng, amount)
+    }
+
+    async fn spawn_user_action(
         &mut self,
         tx: &Sender<Event>,
         controller: &mut TaskController,
+        user_id: usize,
     ) -> Option<JoinHandle<Option<()>>> {
-        let (id, entity) = self.pick_random_entity();
+        let entity = self
+            .entities
+            .get(&user_id)
+            .expect("entity should be present");
         if let Entity::Waiting = entity {
-            log::debug!(" --- waking up entity {}", id);
-            let user = User::new(id, tx.clone(), &self.config).await;
-            self.entities.insert(id, Entity::from_user(user));
+            log::debug!(" --- waking up entity {}", user_id);
+            let user = User::new(user_id, tx.clone(), &self.config).await;
+            self.entities.insert(user_id, Entity::from_user(user));
         }
-        if let Entity::Ready { user } = self.entities.get(&id).unwrap() {
+        if let Entity::Ready { user } = self.entities.get(&user_id).unwrap() {
             // user action task to be executed in parallel
             Some(controller.spawn({
                 let user = user.clone();
                 let config = self.config.clone();
                 async move {
                     let mut user = user.write().await;
+                    log::debug!("user locked {}", user_id);
                     user.act(&config).await;
+                    log::debug!("user unlocked {}", user_id);
                 }
             }))
         } else {

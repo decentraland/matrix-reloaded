@@ -35,7 +35,11 @@ pub enum State {
 impl User {
     pub async fn new(id_number: usize, notifier: Notifier, config: &Config) -> Self {
         let (homeserver, _) = get_homeserver_url(&config.server.homeserver, None);
-        let id = get_user_id(id_number, homeserver.as_str());
+        let id = get_user_id(
+            id_number,
+            homeserver.as_str(),
+            &config.simulation.execution_id,
+        );
 
         Self {
             id,
@@ -54,6 +58,12 @@ impl User {
         }
     }
 
+    async fn add_room(&self, room_id: &RoomId) {
+        if let State::Sync { rooms, .. } = &self.state {
+            rooms.write().await.push(room_id.to_owned());
+        }
+    }
+
     async fn restart(&mut self, config: &Config) {
         log::debug!("user '{}' act => {}", self.id, "RESTART");
         self.client.reset(config).await;
@@ -68,6 +78,7 @@ impl User {
                 self.state = State::LoggedIn;
             }
             LoginResult::NotRegistered => {
+                log::debug!("user {} not registered", self.id);
                 self.state = State::Unregistered;
             }
             LoginResult::Failed => {
@@ -91,19 +102,24 @@ impl User {
         log::debug!("user '{}' act => {}", self.id, "SYNC");
         match self.client.sync(&self.id).await {
             SyncResult::Ok {
-                mut joined_rooms,
+                joined_rooms,
                 invited_rooms,
                 cancel_sync,
             } => {
-                let mut rooms = vec![];
-                rooms.append(&mut joined_rooms);
+                log::debug!("user '{}' has {} rooms", self.id, joined_rooms.len());
+                log::debug!(
+                    "user '{}' has been invited to {} rooms",
+                    self.id,
+                    &invited_rooms.len()
+                );
 
                 let mut events = vec![];
                 for invited_room in invited_rooms {
                     events.push(SyncEvent::Invite(invited_room));
                 }
+
                 self.state = State::Sync {
-                    rooms: Arc::new(RwLock::new(rooms)),
+                    rooms: Arc::new(RwLock::new(joined_rooms)),
                     events: Arc::new(Mutex::new(events)),
                     cancel_sync,
                 };
@@ -118,13 +134,14 @@ impl User {
 
     async fn read_sync_events(&self, events: &Mutex<Vec<SyncEvent>>) {
         log::debug!("user '{}' reading sync events", self.id);
-        let mut new_events = self.client.read_sync_events().await;
-        if !new_events.is_empty() {
-            let mut events = events.lock().await;
-            events.append(&mut new_events);
-            log::debug!("user '{}' has {} sync events", self.id, events.len());
-        } else {
-            log::debug!("user '{}' has no sync events", self.id);
+        let new_events = self.client.read_sync_events().await;
+        let mut events = events.lock().await;
+        for event in new_events {
+            if let SyncEvent::RoomCreated(room_id) = event {
+                self.add_room(&room_id).await;
+            } else {
+                events.push(event);
+            }
         }
     }
 
@@ -156,13 +173,7 @@ impl User {
                     SocialAction::SendMessage => {
                         self.send_message(pick_random_room(rooms).await).await
                     }
-                    SocialAction::AddFriend => {
-                        self.add_friend(pick_random_user(
-                            config.simulation.max_users,
-                            &config.server.homeserver,
-                        ))
-                        .await
-                    }
+                    SocialAction::AddFriend => self.add_friend(config).await,
                     SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
                     SocialAction::UpdateStatus => self.update_status().await,
                 };
@@ -177,6 +188,7 @@ impl User {
         match event {
             SyncEvent::Invite(room_id) => self.join(&room_id).await,
             SyncEvent::Message(room_id, _) => self.respond(room_id).await,
+            _ => {}
         }
     }
 
@@ -185,9 +197,10 @@ impl User {
         self.send_message(Some(room)).await;
     }
 
-    async fn add_friend(&self, user_id: OwnedUserId) {
+    async fn add_friend(&self, config: &Config) {
         log::debug!("user '{}' act => {}", self.id, "ADD FRIEND");
-        self.client.add_friend(&user_id).await;
+        let friend_id = self.pick_friend(config);
+        self.client.add_friend(&friend_id).await;
     }
 
     async fn join(&self, room: &RoomId) {
@@ -214,10 +227,25 @@ impl User {
         log::debug!("user '{}' act => {}", self.id, "UPDATE STATUS");
         self.client.update_status(&self.id).await;
     }
+
+    fn pick_friend(&self, config: &Config) -> OwnedUserId {
+        let id_number = rand::thread_rng().gen_range(0..config.simulation.max_users);
+        let (homeserver, _) = get_homeserver_url(&config.server.homeserver, None);
+        loop {
+            let friend_id = get_user_id(
+                id_number,
+                homeserver.as_str(),
+                &config.simulation.execution_id,
+            );
+            if friend_id != self.id {
+                return friend_id;
+            }
+        }
+    }
 }
 
-fn get_user_id(id_number: usize, homeserver: &str) -> OwnedUserId {
-    <&UserId>::try_from(format!("@someuser_{id_number}:{homeserver}").as_str())
+fn get_user_id(id_number: usize, homeserver: &str, execution_id: &str) -> OwnedUserId {
+    <&UserId>::try_from(format!("@user_{id_number}_{execution_id}:{homeserver}").as_str())
         .unwrap()
         .to_owned()
 }
@@ -249,10 +277,4 @@ async fn pick_random_room(rooms: &RwLock<Vec<OwnedRoomId>>) -> Option<OwnedRoomI
         .await
         .choose(&mut rand::thread_rng())
         .map(|room| room.to_owned())
-}
-
-fn pick_random_user(max_users: usize, homeserver: &str) -> OwnedUserId {
-    let id_number = rand::thread_rng().gen_range(0..max_users);
-    let (homeserver, _) = get_homeserver_url(homeserver, None);
-    get_user_id(id_number, homeserver.as_str())
 }
