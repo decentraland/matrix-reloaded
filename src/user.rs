@@ -4,6 +4,7 @@ use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
 use crate::configuration::{get_homeserver_url, Config};
 use crate::events::{Notifier, SyncEvent};
+use crate::simulation::Context;
 use crate::text::get_random_string;
 use async_channel::Sender;
 use futures::lock::Mutex;
@@ -14,7 +15,7 @@ use rand::Rng;
 
 #[derive(Clone, Debug)]
 pub struct User {
-    id: OwnedUserId,
+    pub id: OwnedUserId,
     client: Client,
     pub state: State,
 }
@@ -48,13 +49,13 @@ impl User {
         }
     }
 
-    pub async fn act(&mut self, config: &Config) {
+    pub async fn act(&mut self, context: &Context) {
         match &self.state {
             State::Unauthenticated => self.log_in().await,
             State::Unregistered => self.register().await,
             State::LoggedIn => self.sync().await,
-            State::Sync { .. } => self.socialize(config).await,
-            State::LoggedOut => self.restart(config).await,
+            State::Sync { .. } => self.socialize(context).await,
+            State::LoggedOut => self.restart(&context.config).await,
         }
     }
 
@@ -151,7 +152,7 @@ impl User {
     // - add a new friend
     // - update status
     // - log out (not so social)
-    async fn socialize(&mut self, config: &Config) {
+    async fn socialize(&mut self, context: &Context) {
         log::debug!("user '{}' act => {}", self.id, "SOCIALIZE");
 
         if let State::Sync {
@@ -173,7 +174,7 @@ impl User {
                     SocialAction::SendMessage => {
                         self.send_message(pick_random_room(rooms).await).await
                     }
-                    SocialAction::AddFriend => self.add_friend(config).await,
+                    SocialAction::AddFriend => self.add_friend(context).await,
                     SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
                     SocialAction::UpdateStatus => self.update_status().await,
                 };
@@ -197,10 +198,14 @@ impl User {
         self.send_message(Some(room)).await;
     }
 
-    async fn add_friend(&self, config: &Config) {
+    async fn add_friend(&self, context: &Context) {
         log::debug!("user '{}' act => {}", self.id, "ADD FRIEND");
-        let friend_id = self.pick_friend(config);
-        self.client.add_friend(&friend_id).await;
+        let friend_id = self.pick_friend(context);
+        if let Some(friend_id) = friend_id {
+            self.client.add_friend(&friend_id).await;
+        } else {
+            log::debug!("there are no users to add as friend :(");
+        }
     }
 
     async fn join(&self, room: &RoomId) {
@@ -228,17 +233,18 @@ impl User {
         self.client.update_status(&self.id).await;
     }
 
-    fn pick_friend(&self, config: &Config) -> OwnedUserId {
-        let id_number = rand::thread_rng().gen_range(0..config.simulation.max_users);
-        let (homeserver, _) = get_homeserver_url(&config.server.homeserver, None);
+    fn pick_friend(&self, context: &Context) -> Option<OwnedUserId> {
+        let mut rng = rand::thread_rng();
+        let (homeserver, _) = get_homeserver_url(&context.config.server.homeserver, None);
         loop {
+            let id_number = context.syncing_users.choose(&mut rng)?;
             let friend_id = get_user_id(
-                id_number,
+                *id_number,
                 homeserver.as_str(),
-                &config.simulation.execution_id,
+                &context.config.simulation.execution_id,
             );
             if friend_id != self.id {
-                return friend_id;
+                return Some(friend_id);
             }
         }
     }

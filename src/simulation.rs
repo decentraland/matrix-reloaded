@@ -21,18 +21,53 @@ use tokio::{
 use tokio_context::task::TaskController;
 
 enum Entity {
-    Waiting,
+    Waiting { id: usize },
     Ready { user: Arc<RwLock<User>> },
 }
 
+enum EntityAction {
+    WakeUp(User),
+    Act(JoinHandle<Option<()>>),
+}
+
+pub struct Context {
+    pub syncing_users: Vec<usize>,
+    pub config: Arc<Config>,
+    notifier: Sender<Event>,
+}
+
 impl Entity {
-    fn waiting() -> Self {
-        Self::Waiting
+    fn waiting(id: usize) -> Self {
+        Self::Waiting { id }
     }
 
     fn from_user(user: User) -> Self {
         Self::Ready {
             user: Arc::new(RwLock::new(user)),
+        }
+    }
+
+    async fn act(&self, context: Arc<Context>, controller: &mut TaskController) -> EntityAction {
+        match &self {
+            Entity::Waiting { id } => {
+                log::debug!(" --- waking up entity {}", id);
+                let user = User::new(*id, context.notifier.clone(), &context.config).await;
+                EntityAction::WakeUp(user)
+            }
+            Entity::Ready { user } => {
+                let action = {
+                    let user = user.clone();
+                    let context = context.clone();
+                    async move {
+                        let mut user = user.write().await;
+                        log::debug!("user locked {}", user.id);
+                        user.act(&context).await;
+                        log::debug!("user unlocked {}", user.id);
+                    }
+                };
+                let handle = controller.spawn(action);
+                EntityAction::Act(handle)
+            }
         }
     }
 }
@@ -45,7 +80,7 @@ pub struct Simulation {
 impl Simulation {
     pub fn with(config: Config) -> Self {
         let entities = (0..config.simulation.max_users).fold(BTreeMap::new(), |mut map, i| {
-            map.insert(i, Entity::waiting());
+            map.insert(i, Entity::waiting(i));
             map
         });
 
@@ -71,7 +106,7 @@ impl Simulation {
         // start simulation
         for _ in 0..self.config.simulation.ticks {
             self.tick(&tx).await;
-            self.track_users().await;
+            self.track_users();
         }
 
         // notify simulation ended after a time period
@@ -101,12 +136,23 @@ impl Simulation {
         let mut controller = TaskController::with_timeout(*tick_duration);
         let mut join_handles = vec![];
 
-        let users = self.pick_users(self.config.simulation.users_per_tick);
+        let user_ids = self.pick_users(self.config.simulation.users_per_tick);
 
-        for user in users {
-            let user_action = self.spawn_user_action(tx, &mut controller, user).await;
-            if let Some(user_action) = user_action {
-                join_handles.push(user_action);
+        let context = Arc::new(Context {
+            syncing_users: self.get_syncing_users(),
+            config: self.config.clone(),
+            notifier: tx.clone(),
+        });
+
+        for user_id in user_ids {
+            let entity = self.entities.get(&user_id).expect("user to exist");
+            match entity.act(context.clone(), &mut controller).await {
+                EntityAction::WakeUp(user) => {
+                    self.entities.insert(user_id, Entity::from_user(user));
+                }
+                EntityAction::Act(user_action) => {
+                    join_handles.push(user_action);
+                }
             }
         }
         join_all(join_handles).await;
@@ -118,55 +164,13 @@ impl Simulation {
 
     fn pick_users(&self, amount: usize) -> Vec<usize> {
         let mut rng = rand::thread_rng();
+
         (0..self.config.simulation.max_users).choose_multiple(&mut rng, amount)
     }
 
-    async fn spawn_user_action(
-        &mut self,
-        tx: &Sender<Event>,
-        controller: &mut TaskController,
-        user_id: usize,
-    ) -> Option<JoinHandle<Option<()>>> {
-        let entity = self
-            .entities
-            .get(&user_id)
-            .expect("entity should be present");
-        if let Entity::Waiting = entity {
-            log::debug!(" --- waking up entity {}", user_id);
-            let user = User::new(user_id, tx.clone(), &self.config).await;
-            self.entities.insert(user_id, Entity::from_user(user));
-        }
-        if let Entity::Ready { user } = self.entities.get(&user_id).unwrap() {
-            // user action task to be executed in parallel
-            Some(controller.spawn({
-                let user = user.clone();
-                let config = self.config.clone();
-                async move {
-                    let mut user = user.write().await;
-                    log::debug!("user locked {}", user_id);
-                    user.act(&config).await;
-                    log::debug!("user unlocked {}", user_id);
-                }
-            }))
-        } else {
-            None
-        }
-    }
-
-    async fn track_users(&mut self) {
-        let mut syncing = 0;
-
-        for entity in self.entities.values() {
-            if let Entity::Ready { user } = entity {
-                if let Ok(user) = user.try_read() {
-                    if let State::Sync { .. } = user.state {
-                        syncing += 1;
-                    }
-                }
-            }
-        }
-
-        self.progress.tick(syncing);
+    fn track_users(&mut self) {
+        let syncing = self.get_syncing_users().len();
+        self.progress.tick(syncing as u64);
     }
 
     async fn store_report(&self, report: &Report) {
@@ -176,5 +180,19 @@ impl Simulation {
         let output_dir = format!("{output_folder}/{homeserver}");
 
         report.generate(output_dir.as_str(), &execution_id());
+    }
+
+    fn get_syncing_users(&self) -> Vec<usize> {
+        let mut online_users = vec![];
+        for (id, entity) in self.entities.iter() {
+            if let Entity::Ready { user } = entity {
+                if let Ok(user) = user.try_read() {
+                    if let State::Sync { .. } = user.state {
+                        online_users.push(*id);
+                    }
+                }
+            }
+        }
+        online_users
     }
 }
