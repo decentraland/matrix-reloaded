@@ -11,6 +11,7 @@ use crate::user::State;
 use crate::user::User;
 use futures::future::join_all;
 use matrix_sdk::locks::RwLock;
+use matrix_sdk::ruma::OwnedUserId;
 use rand::prelude::IteratorRandom;
 use std::{collections::BTreeMap, ops::Sub, sync::Arc, time::Instant};
 use tokio::{
@@ -21,18 +22,53 @@ use tokio::{
 use tokio_context::task::TaskController;
 
 enum Entity {
-    Waiting,
+    Waiting { id: usize },
     Ready { user: Arc<RwLock<User>> },
 }
 
+enum EntityAction {
+    WakeUp(User),
+    Act(JoinHandle<Option<()>>),
+}
+
+pub struct Context {
+    pub syncing_users: Vec<OwnedUserId>,
+    pub config: Arc<Config>,
+    notifier: Sender<Event>,
+}
+
 impl Entity {
-    fn waiting() -> Self {
-        Self::Waiting
+    fn waiting(id: usize) -> Self {
+        Self::Waiting { id }
     }
 
     fn from_user(user: User) -> Self {
         Self::Ready {
             user: Arc::new(RwLock::new(user)),
+        }
+    }
+
+    async fn act(&self, context: Arc<Context>, controller: &mut TaskController) -> EntityAction {
+        match &self {
+            Entity::Waiting { id } => {
+                log::debug!(" --- waking up entity {}", id);
+                let user = User::new(*id, context.notifier.clone(), &context.config).await;
+                EntityAction::WakeUp(user)
+            }
+            Entity::Ready { user } => {
+                let action = {
+                    let user = user.clone();
+                    let context = context.clone();
+                    async move {
+                        let mut user = user.write().await;
+                        log::debug!("user locked {}", user.localpart);
+                        user.act(&context).await;
+                        log::debug!("user unlocked {}", user.localpart);
+                    }
+                };
+                let handle = controller.spawn(action);
+                EntityAction::Act(handle)
+            }
         }
     }
 }
@@ -45,7 +81,7 @@ pub struct Simulation {
 impl Simulation {
     pub fn with(config: Config) -> Self {
         let entities = (0..config.simulation.max_users).fold(BTreeMap::new(), |mut map, i| {
-            map.insert(i, Entity::waiting());
+            map.insert(i, Entity::waiting(i));
             map
         });
 
@@ -54,16 +90,6 @@ impl Simulation {
             progress: create_progress(config.simulation.ticks, config.simulation.max_users),
             config: Arc::new(config),
         }
-    }
-    fn pick_random_entity(&mut self) -> (usize, &Entity) {
-        let mut rng = rand::thread_rng();
-        let id = (0..self.config.simulation.max_users)
-            .choose(&mut rng)
-            .unwrap();
-        (
-            id,
-            self.entities.get(&id).expect("entity should be present"),
-        )
     }
 
     pub async fn run(&mut self) {
@@ -111,10 +137,23 @@ impl Simulation {
         let mut controller = TaskController::with_timeout(*tick_duration);
         let mut join_handles = vec![];
 
-        for _ in 0..self.config.simulation.users_per_tick {
-            let user_action = self.pick_user_action(tx, &mut controller).await;
-            if let Some(user_action) = user_action {
-                join_handles.push(user_action);
+        let user_ids = self.pick_users(self.config.simulation.users_per_tick);
+
+        let context = Arc::new(Context {
+            syncing_users: self.get_syncing_users().await,
+            config: self.config.clone(),
+            notifier: tx.clone(),
+        });
+
+        for user_id in user_ids {
+            let entity = self.entities.get(&user_id).expect("user to exist");
+            match entity.act(context.clone(), &mut controller).await {
+                EntityAction::WakeUp(user) => {
+                    self.entities.insert(user_id, Entity::from_user(user));
+                }
+                EntityAction::Act(user_action) => {
+                    join_handles.push(user_action);
+                }
             }
         }
         join_all(join_handles).await;
@@ -124,46 +163,15 @@ impl Simulation {
         }
     }
 
-    async fn pick_user_action(
-        &mut self,
-        tx: &Sender<Event>,
-        controller: &mut TaskController,
-    ) -> Option<JoinHandle<Option<()>>> {
-        let (id, entity) = self.pick_random_entity();
-        if let Entity::Waiting = entity {
-            log::debug!(" --- waking up entity {}", id);
-            let user = User::new(id, tx.clone(), &self.config).await;
-            self.entities.insert(id, Entity::from_user(user));
-        }
-        if let Entity::Ready { user } = self.entities.get(&id).unwrap() {
-            // user action task to be executed in parallel
-            Some(controller.spawn({
-                let user = user.clone();
-                let config = self.config.clone();
-                async move {
-                    let mut user = user.write().await;
-                    user.act(&config).await;
-                }
-            }))
-        } else {
-            None
-        }
+    fn pick_users(&self, amount: usize) -> Vec<usize> {
+        let mut rng = rand::thread_rng();
+
+        (0..self.config.simulation.max_users).choose_multiple(&mut rng, amount)
     }
 
     async fn track_users(&mut self) {
-        let mut syncing = 0;
-
-        for entity in self.entities.values() {
-            if let Entity::Ready { user } = entity {
-                if let Ok(user) = user.try_read() {
-                    if let State::Sync { .. } = user.state {
-                        syncing += 1;
-                    }
-                }
-            }
-        }
-
-        self.progress.tick(syncing);
+        let syncing = self.get_syncing_users().await.len();
+        self.progress.tick(syncing as u64);
     }
 
     async fn store_report(&self, report: &Report) {
@@ -173,5 +181,20 @@ impl Simulation {
         let output_dir = format!("{output_folder}/{homeserver}");
 
         report.generate(output_dir.as_str(), &execution_id());
+    }
+
+    async fn get_syncing_users(&self) -> Vec<OwnedUserId> {
+        let mut online_users = vec![];
+        for (_, entity) in self.entities.iter() {
+            if let Entity::Ready { user } = entity {
+                if let Ok(user) = user.try_read() {
+                    if let State::Sync { .. } = user.state {
+                        let user_id = user.id().await.expect("user_id to be present");
+                        online_users.push(user_id);
+                    }
+                }
+            }
+        }
+        online_users
     }
 }
