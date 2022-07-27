@@ -8,20 +8,14 @@ use serde_with::DurationSeconds;
 use std::time::Duration;
 
 /// This function returns homeserver domain and url, ex:
-///  - get_homeserver_url("matrix.domain.com") => ("matrix.domain.com", "https://matrix.domain.com")
-///  - get_homeserver_url("synapse.domain.com") => ("domain.com", "https://matrix.domain.com")
-pub fn get_homeserver_url(homeserver: &str, default_protocol: Option<&str>) -> (String, String) {
+///  - get_homeserver_url("matrix.domain.com") => "https://matrix.domain.com"
+pub fn get_homeserver_url(homeserver: &str, default_protocol: Option<&str>) -> String {
     let regex = Regex::new(r"https?://").unwrap();
     if regex.is_match(homeserver) {
-        let parts: Vec<&str> = regex.splitn(homeserver, 2).collect();
-        let domain = parts[1].to_string().replace("synapse.", "");
-        (domain, homeserver.to_string())
+        homeserver.to_string()
     } else {
         let protocol = default_protocol.unwrap_or("https");
-        (
-            homeserver.to_string().replace("synapse.", ""),
-            format!("{protocol}://{homeserver}"),
-        )
+        format!("{protocol}://{homeserver}")
     }
 }
 

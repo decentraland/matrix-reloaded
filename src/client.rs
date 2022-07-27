@@ -99,7 +99,7 @@ impl Client {
         retry_enabled: bool,
         respect_login_well_known: bool,
     ) -> Result<matrix_sdk::Client, ClientBuildError> {
-        let (_, homeserver) = get_homeserver_url(homeserver_url, None);
+        let homeserver = get_homeserver_url(homeserver_url, None);
 
         let timeout = Duration::from_secs(30);
 
@@ -142,10 +142,10 @@ impl Client {
         self.inner = client;
     }
 
-    pub async fn login(&self, id: &UserId) -> LoginResult {
+    pub async fn login(&self, localpart: &str) -> LoginResult {
         let client = &self.inner;
         let now = Instant::now();
-        let response = client.login(id.localpart(), PASSWORD, None, None).await;
+        let response = client.login(localpart, PASSWORD, None, None).await;
         self.event_notifier
             .send(Event::RequestDuration((UserRequest::Login, now.elapsed())))
             .await
@@ -172,11 +172,11 @@ impl Client {
         }
     }
 
-    pub async fn register(&self, id: &UserId) -> RegisterResult {
+    pub async fn register(&self, localpart: &str) -> RegisterResult {
         let client = &self.inner;
 
         let req = assign!(RegistrationRequest::new(), {
-            username: Some(id.localpart()),
+            username: Some(localpart),
             password: Some(PASSWORD),
             auth: Some(AuthData::Dummy(Dummy::new()))
         });
@@ -206,9 +206,14 @@ impl Client {
         }
     }
 
+    pub async fn user_id(&self) -> Option<OwnedUserId> {
+        self.inner.user_id().await
+    }
+
     /// Do initial sync and return rooms and new invites. Then register event handler for future syncs and notify events.
-    pub async fn sync(&self, user_id: &UserId) -> SyncResult {
+    pub async fn sync(&self) -> SyncResult {
         let client = &self.inner;
+        let user_id = self.user_id().await.expect("user_id to be present");
         let now = Instant::now();
         let response = client.sync_once(SyncSettings::default()).await;
         self.event_notifier
@@ -230,8 +235,8 @@ impl Client {
 
         let (tx, _) = &self.sync_channel;
 
-        add_invite_event_handler(client, tx, user_id).await;
-        add_room_message_event_handler(client, tx, user_id, &self.event_notifier).await;
+        add_invite_event_handler(client, tx, &user_id).await;
+        add_room_message_event_handler(client, tx, &user_id, &self.event_notifier).await;
 
         let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
 
@@ -335,9 +340,10 @@ impl Client {
         self.send_and_notify(request, UserRequest::JoinRoom).await;
     }
 
-    pub async fn update_status(&self, user_id: &UserId) {
+    pub async fn update_status(&self) {
+        let user_id = self.user_id().await.expect("user_id to be present");
         let random_status_msg = get_random_string();
-        let update_presence = assign!(UpdatePresenceRequest::new(user_id, PresenceState::Online), { status_msg: Some(random_status_msg.as_str())});
+        let update_presence = assign!(UpdatePresenceRequest::new(&user_id, PresenceState::Online), { status_msg: Some(random_status_msg.as_str())});
         self.send_and_notify(update_presence, UserRequest::UpdateStatus)
             .await;
     }

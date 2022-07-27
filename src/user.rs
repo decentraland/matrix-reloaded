@@ -2,20 +2,20 @@ use std::sync::Arc;
 
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
-use crate::configuration::{get_homeserver_url, Config};
+use crate::configuration::Config;
 use crate::events::{Notifier, SyncEvent};
 use crate::simulation::Context;
 use crate::text::get_random_string;
 use async_channel::Sender;
 use futures::lock::Mutex;
 use matrix_sdk::locks::RwLock;
-use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId, UserId};
+use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
 use rand::prelude::SliceRandom;
 use rand::Rng;
 
 #[derive(Clone, Debug)]
 pub struct User {
-    pub id: OwnedUserId,
+    pub localpart: String,
     client: Client,
     pub state: State,
 }
@@ -35,16 +35,12 @@ pub enum State {
 
 impl User {
     pub async fn new(id_number: usize, notifier: Notifier, config: &Config) -> Self {
-        let (homeserver, _) = get_homeserver_url(&config.server.homeserver, None);
-        let id = get_user_id(
-            id_number,
-            homeserver.as_str(),
-            &config.simulation.execution_id,
-        );
+        let localpart = get_user_id_localpart(id_number, &config.simulation.execution_id);
 
+        let client = Client::new(notifier, config).await;
         Self {
-            id,
-            client: Client::new(notifier, config).await,
+            localpart,
+            client,
             state: State::Unregistered,
         }
     }
@@ -66,51 +62,58 @@ impl User {
     }
 
     async fn restart(&mut self, config: &Config) {
-        log::debug!("user '{}' act => {}", self.id, "RESTART");
+        log::debug!("user '{}' act => {}", self.localpart, "RESTART");
         self.client.reset(config).await;
         self.state = State::Unauthenticated;
     }
 
     async fn log_in(&mut self) {
-        log::debug!("user '{}' act => {}", self.id, "LOG IN");
+        log::debug!("user '{}' act => {}", self.localpart, "LOG IN");
 
-        match self.client.login(&self.id).await {
+        match self.client.login(&self.localpart).await {
             LoginResult::Ok => {
                 self.state = State::LoggedIn;
             }
             LoginResult::NotRegistered => {
-                log::debug!("user {} not registered", self.id);
+                log::debug!("user {} not registered", self.localpart);
                 self.state = State::Unregistered;
             }
             LoginResult::Failed => {
-                log::debug!("user {} failed to login, maybe retry next time...", self.id);
+                log::debug!(
+                    "user {} failed to login, maybe retry next time...",
+                    self.localpart
+                );
             }
         }
     }
 
     async fn register(&mut self) {
-        log::debug!("user '{}' act => {}", self.id, "REGISTER");
-        match self.client.register(&self.id).await {
+        log::debug!("user '{}' act => {}", self.localpart, "REGISTER");
+        match self.client.register(&self.localpart).await {
             RegisterResult::Ok => self.state = State::Unauthenticated,
             RegisterResult::Failed => log::debug!(
                 "could not register user {}, will retry next time...",
-                self.id
+                self.localpart
             ),
         }
     }
 
+    pub async fn id(&self) -> Option<OwnedUserId> {
+        self.client.user_id().await
+    }
+
     async fn sync(&mut self) {
-        log::debug!("user '{}' act => {}", self.id, "SYNC");
-        match self.client.sync(&self.id).await {
+        log::debug!("user '{}' act => {}", self.localpart, "SYNC");
+        match self.client.sync().await {
             SyncResult::Ok {
                 joined_rooms,
                 invited_rooms,
                 cancel_sync,
             } => {
-                log::debug!("user '{}' has {} rooms", self.id, joined_rooms.len());
+                log::debug!("user '{}' has {} rooms", self.localpart, joined_rooms.len());
                 log::debug!(
                     "user '{}' has been invited to {} rooms",
-                    self.id,
+                    self.localpart,
                     &invited_rooms.len()
                 );
 
@@ -124,17 +127,17 @@ impl User {
                     events: Arc::new(Mutex::new(events)),
                     cancel_sync,
                 };
-                log::debug!("user '{}' now is syncing", self.id);
+                log::debug!("user '{}' now is syncing", self.localpart);
             }
             SyncResult::Failed => log::debug!(
                 "user {} couldn't make initial sync, will retry next time...",
-                self.id
+                self.localpart
             ),
         }
     }
 
     async fn read_sync_events(&self, events: &Mutex<Vec<SyncEvent>>) {
-        log::debug!("user '{}' reading sync events", self.id);
+        log::debug!("user '{}' reading sync events", self.localpart);
         let new_events = self.client.read_sync_events().await;
         let mut events = events.lock().await;
         for event in new_events {
@@ -153,7 +156,7 @@ impl User {
     // - update status
     // - log out (not so social)
     async fn socialize(&mut self, context: &Context) {
-        log::debug!("user '{}' act => {}", self.id, "SOCIALIZE");
+        log::debug!("user '{}' act => {}", self.localpart, "SOCIALIZE");
 
         if let State::Sync {
             rooms,
@@ -164,12 +167,12 @@ impl User {
             self.read_sync_events(events).await;
             let mut events = events.lock().await;
             if let Some(event) = events.pop() {
-                log::debug!("--- user '{}' going to react", self.id);
+                log::debug!("--- user '{}' going to react", self.localpart);
                 self.react(event).await
             } else {
                 drop(events);
 
-                log::debug!("--- user '{}' going to start interaction", self.id);
+                log::debug!("--- user '{}' going to start interaction", self.localpart);
                 match pick_random_action() {
                     SocialAction::SendMessage => {
                         self.send_message(pick_random_room(rooms).await).await
@@ -185,7 +188,7 @@ impl User {
     }
 
     async fn react(&self, event: SyncEvent) {
-        log::debug!("user '{}' act => {}", self.id, "REACT");
+        log::debug!("user '{}' act => {}", self.localpart, "REACT");
         match event {
             SyncEvent::Invite(room_id) => self.join(&room_id).await,
             SyncEvent::Message(room_id, _) => self.respond(room_id).await,
@@ -194,12 +197,12 @@ impl User {
     }
 
     async fn respond(&self, room: OwnedRoomId) {
-        log::debug!("user '{}' act => {}", self.id, "RESPOND");
+        log::debug!("user '{}' act => {}", self.localpart, "RESPOND");
         self.send_message(Some(room)).await;
     }
 
     async fn add_friend(&self, context: &Context) {
-        log::debug!("user '{}' act => {}", self.id, "ADD FRIEND");
+        log::debug!("user '{}' act => {}", self.localpart, "ADD FRIEND");
         let friend_id = self.pick_friend(context);
         if let Some(friend_id) = friend_id {
             self.client.add_friend(&friend_id).await;
@@ -209,12 +212,12 @@ impl User {
     }
 
     async fn join(&self, room: &RoomId) {
-        log::debug!("user '{}' act => {}", self.id, "JOIN ROOM");
+        log::debug!("user '{}' act => {}", self.localpart, "JOIN ROOM");
         self.client.join_room(room).await;
     }
 
     async fn send_message(&self, room: Option<OwnedRoomId>) {
-        log::debug!("user '{}' act => {}", self.id, "SEND MESSAGE");
+        log::debug!("user '{}' act => {}", self.localpart, "SEND MESSAGE");
         if let Some(room) = room {
             self.client.send_message(&room, get_random_string()).await;
         } else {
@@ -223,37 +226,29 @@ impl User {
     }
 
     async fn log_out(&mut self, cancel_sync: Sender<bool>) {
-        log::debug!("user '{}' act => {}", self.id, "LOG OUT");
+        log::debug!("user '{}' act => {}", self.localpart, "LOG OUT");
         cancel_sync.send(true).await.expect("channel open");
         self.state = State::LoggedOut;
     }
 
     async fn update_status(&self) {
-        log::debug!("user '{}' act => {}", self.id, "UPDATE STATUS");
-        self.client.update_status(&self.id).await;
+        log::debug!("user '{}' act => {}", self.localpart, "UPDATE STATUS");
+        self.client.update_status().await;
     }
 
     fn pick_friend(&self, context: &Context) -> Option<OwnedUserId> {
         let mut rng = rand::thread_rng();
-        let (homeserver, _) = get_homeserver_url(&context.config.server.homeserver, None);
         loop {
-            let id_number = context.syncing_users.choose(&mut rng)?;
-            let friend_id = get_user_id(
-                *id_number,
-                homeserver.as_str(),
-                &context.config.simulation.execution_id,
-            );
-            if friend_id != self.id {
-                return Some(friend_id);
+            let friend_id = context.syncing_users.choose(&mut rng)?;
+            if friend_id.localpart() != self.localpart {
+                return Some(friend_id.clone());
             }
         }
     }
 }
 
-fn get_user_id(id_number: usize, homeserver: &str, execution_id: &str) -> OwnedUserId {
-    <&UserId>::try_from(format!("@user_{id_number}_{execution_id}:{homeserver}").as_str())
-        .unwrap()
-        .to_owned()
+fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
+    format!("user_{id_number}_{execution_id}")
 }
 
 enum SocialAction {

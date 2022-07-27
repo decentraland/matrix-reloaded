@@ -11,6 +11,7 @@ use crate::user::State;
 use crate::user::User;
 use futures::future::join_all;
 use matrix_sdk::locks::RwLock;
+use matrix_sdk::ruma::OwnedUserId;
 use rand::prelude::IteratorRandom;
 use std::{collections::BTreeMap, ops::Sub, sync::Arc, time::Instant};
 use tokio::{
@@ -31,7 +32,7 @@ enum EntityAction {
 }
 
 pub struct Context {
-    pub syncing_users: Vec<usize>,
+    pub syncing_users: Vec<OwnedUserId>,
     pub config: Arc<Config>,
     notifier: Sender<Event>,
 }
@@ -60,9 +61,9 @@ impl Entity {
                     let context = context.clone();
                     async move {
                         let mut user = user.write().await;
-                        log::debug!("user locked {}", user.id);
+                        log::debug!("user locked {}", user.localpart);
                         user.act(&context).await;
-                        log::debug!("user unlocked {}", user.id);
+                        log::debug!("user unlocked {}", user.localpart);
                     }
                 };
                 let handle = controller.spawn(action);
@@ -106,7 +107,7 @@ impl Simulation {
         // start simulation
         for _ in 0..self.config.simulation.ticks {
             self.tick(&tx).await;
-            self.track_users();
+            self.track_users().await;
         }
 
         // notify simulation ended after a time period
@@ -139,7 +140,7 @@ impl Simulation {
         let user_ids = self.pick_users(self.config.simulation.users_per_tick);
 
         let context = Arc::new(Context {
-            syncing_users: self.get_syncing_users(),
+            syncing_users: self.get_syncing_users().await,
             config: self.config.clone(),
             notifier: tx.clone(),
         });
@@ -168,8 +169,8 @@ impl Simulation {
         (0..self.config.simulation.max_users).choose_multiple(&mut rng, amount)
     }
 
-    fn track_users(&mut self) {
-        let syncing = self.get_syncing_users().len();
+    async fn track_users(&mut self) {
+        let syncing = self.get_syncing_users().await.len();
         self.progress.tick(syncing as u64);
     }
 
@@ -182,13 +183,14 @@ impl Simulation {
         report.generate(output_dir.as_str(), &execution_id());
     }
 
-    fn get_syncing_users(&self) -> Vec<usize> {
+    async fn get_syncing_users(&self) -> Vec<OwnedUserId> {
         let mut online_users = vec![];
-        for (id, entity) in self.entities.iter() {
+        for (_, entity) in self.entities.iter() {
             if let Entity::Ready { user } = entity {
                 if let Ok(user) = user.try_read() {
                     if let State::Sync { .. } = user.state {
-                        online_users.push(*id);
+                        let user_id = user.id().await.expect("user_id to be present");
+                        online_users.push(user_id);
                     }
                 }
             }
