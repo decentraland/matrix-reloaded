@@ -1,10 +1,10 @@
 use crate::{
     configuration::{get_homeserver_url, Config},
     events::{Event, Notifier, SyncEvent, UserRequest},
+    sync::{sync, SyncLoopChannel, SyncLoopChannels},
     text::get_random_string,
 };
 use async_channel::Sender;
-use futures::Future;
 use matrix_sdk::ruma::{
     api::{
         client::{
@@ -37,7 +37,7 @@ use matrix_sdk::{
     ClientBuildError,
     Error::Http,
     HttpError::{self, Api, UiaaError},
-    LoopCtrl, RumaApiError,
+    RumaApiError,
 };
 use std::fmt::Debug;
 use std::time::{Duration, Instant};
@@ -70,7 +70,7 @@ pub enum SyncResult {
     Ok {
         joined_rooms: Vec<OwnedRoomId>,
         invited_rooms: Vec<OwnedRoomId>,
-        cancel_sync: Sender<bool>,
+        sync_loop_channel: SyncLoopChannel,
     },
     Failed,
 }
@@ -238,9 +238,9 @@ impl Client {
         add_invite_event_handler(client, tx, &user_id).await;
         add_room_message_event_handler(client, tx, &user_id, &self.event_notifier).await;
 
-        let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
+        let (user_side, sync_side): SyncLoopChannels = bichannel::channel();
 
-        tokio::spawn(sync_until_cancel(client, check_cancel).await);
+        tokio::spawn(sync(client, sync_side).await);
 
         let res = response.expect("already checked it is not an error");
         let joined_rooms = res.rooms.join.keys().cloned().collect::<Vec<_>>();
@@ -248,7 +248,7 @@ impl Client {
         SyncResult::Ok {
             joined_rooms,
             invited_rooms,
-            cancel_sync,
+            sync_loop_channel: user_side,
         }
     }
 
@@ -369,31 +369,6 @@ impl Client {
                 .await
                 .expect("channel should not be closed");
         }
-    }
-}
-
-async fn sync_until_cancel(
-    client: &matrix_sdk::Client,
-    check_cancel: async_channel::Receiver<bool>,
-) -> impl Future<Output = ()> {
-    // client state is held in an `Arc` so the `Client` can be cloned freely.
-    let client = client.clone();
-    async move {
-        client
-            .sync_with_callback(SyncSettings::default(), {
-                let check_cancel = check_cancel.clone();
-                move |_| {
-                    let check_cancel = check_cancel.clone();
-                    async move {
-                        if check_cancel.try_recv().is_ok() {
-                            LoopCtrl::Break
-                        } else {
-                            LoopCtrl::Continue
-                        }
-                    }
-                }
-            })
-            .await;
     }
 }
 

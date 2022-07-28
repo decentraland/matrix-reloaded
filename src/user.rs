@@ -5,8 +5,8 @@ use crate::client::{LoginResult, SyncResult};
 use crate::configuration::Config;
 use crate::events::{Notifier, SyncEvent};
 use crate::simulation::Context;
+use crate::sync::{SyncLoopChannel, SyncLoopMessage};
 use crate::text::get_random_string;
-use async_channel::Sender;
 use futures::lock::Mutex;
 use matrix_sdk::locks::RwLock;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
@@ -28,7 +28,7 @@ pub enum State {
     Sync {
         rooms: Arc<RwLock<Vec<OwnedRoomId>>>, // available rooms that user can send messages
         events: Arc<Mutex<Vec<SyncEvent>>>, // recent events to be processed and react, for instance to respond to friends or join rooms
-        cancel_sync: Sender<bool>,          // cancel sync task
+        sync_loop_channel: SyncLoopChannel, // cancel sync task
     },
     LoggedOut,
 }
@@ -108,7 +108,7 @@ impl User {
             SyncResult::Ok {
                 joined_rooms,
                 invited_rooms,
-                cancel_sync,
+                sync_loop_channel,
             } => {
                 log::debug!("user '{}' has {} rooms", self.localpart, joined_rooms.len());
                 log::debug!(
@@ -125,7 +125,7 @@ impl User {
                 self.state = State::Sync {
                     rooms: Arc::new(RwLock::new(joined_rooms)),
                     events: Arc::new(Mutex::new(events)),
-                    cancel_sync,
+                    sync_loop_channel,
                 };
                 log::debug!("user '{}' now is syncing", self.localpart);
             }
@@ -161,9 +161,15 @@ impl User {
         if let State::Sync {
             rooms,
             events,
-            cancel_sync,
+            sync_loop_channel,
         } = &self.state
         {
+            // check we are still in sync
+            if let Ok(SyncLoopMessage::LogOut) = sync_loop_channel.try_recv() {
+                self.state = State::LoggedOut;
+                return;
+            }
+
             self.read_sync_events(events).await;
             let mut events = events.lock().await;
             if let Some(event) = events.pop() {
@@ -178,7 +184,7 @@ impl User {
                         self.send_message(pick_random_room(rooms).await).await
                     }
                     SocialAction::AddFriend => self.add_friend(context).await,
-                    SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
+                    SocialAction::LogOut => self.log_out(sync_loop_channel.clone()).await,
                     SocialAction::UpdateStatus => self.update_status().await,
                 };
             }
@@ -225,9 +231,11 @@ impl User {
         }
     }
 
-    async fn log_out(&mut self, cancel_sync: Sender<bool>) {
+    async fn log_out(&mut self, sync_loop_channel: SyncLoopChannel) {
         log::debug!("user '{}' act => {}", self.localpart, "LOG OUT");
-        cancel_sync.send(true).await.expect("channel open");
+        sync_loop_channel
+            .send(SyncLoopMessage::StopSync)
+            .expect("channel open");
         self.state = State::LoggedOut;
     }
 

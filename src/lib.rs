@@ -4,6 +4,7 @@ mod events;
 pub mod progress;
 mod report;
 pub mod simulation;
+mod sync;
 mod text;
 mod time;
 mod user;
