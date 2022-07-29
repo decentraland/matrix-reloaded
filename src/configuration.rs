@@ -44,6 +44,10 @@ pub struct Args {
 
     /// Output folder for reports
     output: Option<String>,
+
+    /// Execution ID to be used as part of the ID (as localpart)
+    #[clap(short, long, value_parser)]
+    execution_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -94,6 +98,7 @@ impl Config {
             .set_override_option("simulation.users_per_tick", args.users_per_tick)?
             .set_override_option("simulation.output", args.output)?
             .set_default("simulation.execution_id", time_now().to_string())?
+            .set_override_option("simulation.execution_id", args.execution_id)?
             .build()?;
 
         log::debug!("Config: {:#?}", config);
