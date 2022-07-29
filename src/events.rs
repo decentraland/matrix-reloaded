@@ -24,6 +24,7 @@ pub enum UserRequest {
     JoinRoom,
     SendMessage,
     UpdateStatus,
+    Messages,
 }
 
 #[derive(Debug)]
@@ -39,7 +40,8 @@ pub enum Event {
 pub enum SyncEvent {
     Invite(OwnedRoomId),
     RoomCreated(OwnedRoomId),
-    Message(OwnedRoomId, String),
+    UnreadRoom(OwnedRoomId),
+    MessageReceived(OwnedRoomId, String),
 }
 
 #[derive(Default)]
