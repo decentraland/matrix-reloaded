@@ -38,6 +38,7 @@ pub enum Event {
 #[derive(Clone, Debug)]
 pub enum SyncEvent {
     Invite(OwnedRoomId),
+    RoomCreated(OwnedRoomId),
     Message(OwnedRoomId, String),
 }
 
