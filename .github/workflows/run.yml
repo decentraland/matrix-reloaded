@@ -27,6 +27,10 @@ on:
         description: "Time to wait for all messages to be delivered"
         required: true
         default: "30"
+      execution_id:
+        description: "Used in user ID localpart"
+        required: false
+        default: "ci"
 
 env:
   CARGO_TERM_COLOR: always
@@ -77,4 +81,4 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: run
-          args: --release -- -h ${{ github.event.inputs.homeserver }}
+          args: --release -- -h ${{ github.event.inputs.homeserver }} -e ${{ github.event.inputs.execution_id }}
