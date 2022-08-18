@@ -25,6 +25,7 @@ enum SocialAction {
     SendMessage,
     LogOut,
     UpdateStatus,
+    None,
 }
 
 #[derive(Clone, Debug)]
@@ -184,13 +185,14 @@ impl User {
                 drop(events);
 
                 log::debug!("--- user '{}' going to start interaction", self.localpart);
-                match pick_random_action() {
+                match pick_random_action(context.config.simulation.probability_to_act) {
                     SocialAction::SendMessage => {
                         self.send_message(pick_random_room(rooms).await).await
                     }
                     SocialAction::AddFriend => self.add_friend(context).await,
                     SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
                     SocialAction::UpdateStatus => self.update_status().await,
+                    SocialAction::None => log::debug!("user {} did nothing", self.localpart),
                 };
             }
         } else {
@@ -269,16 +271,20 @@ fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
 }
 
 // we probably want to distribute these actions and don't make them random (more send messages than logouts)
-fn pick_random_action() -> SocialAction {
+fn pick_random_action(probability_to_act: usize) -> SocialAction {
     let mut rng = rand::thread_rng();
-    if rng.gen_ratio(1, 50) {
-        SocialAction::LogOut
-    } else if rng.gen_ratio(1, 25) {
-        SocialAction::UpdateStatus
-    } else if rng.gen_ratio(1, 3) {
-        SocialAction::AddFriend
+    if rng.gen_ratio(probability_to_act as u32, 100) {
+        if rng.gen_ratio(1, 50) {
+            SocialAction::LogOut
+        } else if rng.gen_ratio(1, 25) {
+            SocialAction::UpdateStatus
+        } else if rng.gen_ratio(1, 3) {
+            SocialAction::AddFriend
+        } else {
+            SocialAction::SendMessage
+        }
     } else {
-        SocialAction::SendMessage
+        SocialAction::None
     }
 }
 

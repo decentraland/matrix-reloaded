@@ -48,6 +48,9 @@ pub struct Args {
     /// Execution ID to be used as part of the ID (as localpart)
     #[clap(short, long, value_parser)]
     execution_id: Option<String>,
+
+    /// Probability of a user to act on a tick. Default is 100 (%).
+    probability_to_act: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -70,6 +73,7 @@ pub struct Simulation {
     pub grace_period_duration: Duration,
     pub output: String,
     pub execution_id: String,
+    pub probability_to_act: usize,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -99,6 +103,7 @@ impl Config {
             .set_override_option("simulation.output", args.output)?
             .set_default("simulation.execution_id", time_now().to_string())?
             .set_override_option("simulation.execution_id", args.execution_id)?
+            .set_override_option("simulation.probability_to_act", args.probability_to_act)?
             .build()?;
 
         log::debug!("Config: {:#?}", config);

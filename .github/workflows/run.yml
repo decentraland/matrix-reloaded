@@ -31,6 +31,10 @@ on:
         description: "Used in user ID localpart"
         required: false
         default: "ci"
+      probability_to_act:
+        description: "User: probability to act (0-100)"
+        required: false
+        default: "100"
 
 env:
   CARGO_TERM_COLOR: always
@@ -78,6 +82,12 @@ jobs:
           file: "configuration.toml"
           key: "simulation.grace_period_duration_in_secs"
           value: ${{ github.event.inputs.grace_period_duration_in_secs }}
+      - name: Set probability_to_act
+        uses: ciiiii/toml-editor@1.0.0
+        with:
+          file: "configuration.toml"
+          key: "simulation.probability_to_act"
+          value: ${{ github.event.inputs.probability_to_act }}
       - uses: actions-rs/cargo@v1
         with:
           command: run
