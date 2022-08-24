@@ -264,7 +264,7 @@ impl User {
         log::debug!("user '{}' act => {}", self.localpart, "LOG OUT");
         cancel_sync.send(true).await.expect("channel open");
         self.state = State::LoggedOut;
-        self.localpart += "*";
+        self.localpart += "_";
     }
 
     async fn update_status(&self) {
@@ -317,7 +317,7 @@ async fn pick_random_room(rooms: &RwLock<Vec<OwnedRoomId>>) -> Option<OwnedRoomI
 /// so users can be short or long lived.
 fn get_ticks_to_live(config: &Config) -> usize {
     let mut rng = rand::thread_rng();
-    let short_lived = rng.gen_bool(1. / 2.);
+    let short_lived = rng.gen_bool(config.simulation.probability_to_act as f64 / 100.);
     match short_lived {
         true => max(config.simulation.ticks / 100, 5),
         false => max(config.simulation.ticks / 10, 10),
