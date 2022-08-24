@@ -110,14 +110,12 @@ impl Client {
             RequestConfig::new().disable_retry().timeout(timeout)
         };
 
-        let client = matrix_sdk::Client::builder()
+        matrix_sdk::Client::builder()
             .request_config(request_config)
             .homeserver_url(homeserver)
             .respect_login_well_known(respect_login_well_known)
             .build()
-            .await;
-
-        client
+            .await
     }
 
     pub async fn read_sync_events(&self) -> Vec<SyncEvent> {
