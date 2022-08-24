@@ -317,7 +317,7 @@ async fn pick_random_room(rooms: &RwLock<Vec<OwnedRoomId>>) -> Option<OwnedRoomI
 /// so users can be short or long lived.
 fn get_ticks_to_live(config: &Config) -> usize {
     let mut rng = rand::thread_rng();
-    let short_lived = rng.gen_bool(config.simulation.probability_to_act as f64 / 100.);
+    let short_lived = rng.gen_bool(config.simulation.probability_for_short_lifes as f64 / 100.);
     match short_lived {
         true => max(config.simulation.ticks / 100, 5),
         false => max(config.simulation.ticks / 10, 10),

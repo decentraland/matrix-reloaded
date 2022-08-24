@@ -77,7 +77,7 @@ pub struct Simulation {
     pub output: String,
     pub execution_id: String,
     pub probability_to_act: usize,
-    pub probability_for_short_lives: usize,
+    pub probability_for_short_lifes: usize,
 }
 
 #[derive(Debug, Deserialize, Clone)]
