@@ -251,7 +251,6 @@ impl User {
     async fn update_status(&self) {
         log::debug!("user '{}' act => {}", self.localpart, "UPDATE STATUS");
         self.client.update_status().await;
-
     }
 
     fn pick_friend(&self, context: &Context) -> Option<OwnedUserId> {
@@ -263,7 +262,6 @@ impl User {
             }
         }
     }
-
 }
 
 fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
