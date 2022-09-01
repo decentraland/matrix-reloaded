@@ -11,6 +11,7 @@ use matrix_sdk::ruma::{
             account::register::v3::Request as RegistrationRequest,
             error::ErrorKind,
             membership::join_room_by_id::v3::Request as JoinRoomRequest,
+            message::get_message_events::v3::Request as MessagesRequest,
             presence::set_presence::v3::Request as UpdatePresenceRequest,
             room::create_room::v3::Request as CreateRoomRequest,
             uiaa::{AuthData, Dummy, UiaaResponse},
@@ -109,14 +110,12 @@ impl Client {
             RequestConfig::new().disable_retry().timeout(timeout)
         };
 
-        let client = matrix_sdk::Client::builder()
+        matrix_sdk::Client::builder()
             .request_config(request_config)
             .homeserver_url(homeserver)
             .respect_login_well_known(respect_login_well_known)
             .build()
-            .await;
-
-        client
+            .await
     }
 
     pub async fn read_sync_events(&self) -> Vec<SyncEvent> {
@@ -348,6 +347,12 @@ impl Client {
             .await;
     }
 
+    pub async fn read_messages(&self, room_id: OwnedRoomId) {
+        let messages_request = MessagesRequest::from_start(&room_id);
+        self.send_and_notify(messages_request, UserRequest::Messages)
+            .await;
+    }
+
     async fn send_and_notify<Request>(&self, request: Request, user_request: UserRequest)
     where
         Request: OutgoingRequest + Debug,
@@ -478,7 +483,10 @@ async fn on_room_message(
             );
 
             sender
-                .send(SyncEvent::Message(room.room_id().to_owned(), text.body))
+                .send(SyncEvent::MessageReceived(
+                    room.room_id().to_owned(),
+                    text.body,
+                ))
                 .await
                 .expect("channel open");
             notifier

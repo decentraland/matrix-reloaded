@@ -20,6 +20,13 @@ pub struct User {
     pub state: State,
 }
 
+enum SocialAction {
+    AddFriend,
+    SendMessage,
+    LogOut,
+    UpdateStatus,
+}
+
 #[derive(Clone, Debug)]
 pub enum State {
     Unauthenticated,
@@ -122,6 +129,10 @@ impl User {
                     events.push(SyncEvent::Invite(invited_room));
                 }
 
+                for joined_room in &joined_rooms {
+                    events.push(SyncEvent::UnreadRoom(joined_room.clone()));
+                }
+
                 self.state = State::Sync {
                     rooms: Arc::new(RwLock::new(joined_rooms)),
                     events: Arc::new(Mutex::new(events)),
@@ -191,9 +202,15 @@ impl User {
         log::debug!("user '{}' act => {}", self.localpart, "REACT");
         match event {
             SyncEvent::Invite(room_id) => self.join(&room_id).await,
-            SyncEvent::Message(room_id, _) => self.respond(room_id).await,
+            SyncEvent::MessageReceived(room_id, _) => self.respond(room_id).await,
+            SyncEvent::UnreadRoom(room_id) => self.read_messages(room_id).await,
             _ => {}
         }
+    }
+
+    async fn read_messages(&self, room_id: OwnedRoomId) {
+        log::debug!("user '{}' act => {}", self.localpart, "READ MESSAGES");
+        self.client.read_messages(room_id).await;
     }
 
     async fn respond(&self, room: OwnedRoomId) {
@@ -249,13 +266,6 @@ impl User {
 
 fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
     format!("user_{id_number}_{execution_id}")
-}
-
-enum SocialAction {
-    AddFriend,
-    SendMessage,
-    LogOut,
-    UpdateStatus,
 }
 
 // we probably want to distribute these actions and don't make them random (more send messages than logouts)
