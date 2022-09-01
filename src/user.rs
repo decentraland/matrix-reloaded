@@ -60,7 +60,6 @@ impl User {
             State::Unregistered => self.register().await,
             State::Unauthenticated => self.log_in().await,
             State::LoggedIn => self.sync(&context.config).await,
-            State::LoggedIn => self.sync().await,
             State::Sync { .. } => self.socialize(context).await,
             State::LoggedOut => self.restart(&context.config).await,
         }

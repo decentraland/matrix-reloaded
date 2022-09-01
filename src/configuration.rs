@@ -56,7 +56,6 @@ pub struct Args {
     /// Probability of a user to have a short life. Should be a number between 0 and 100. Default is 50 (%).
     #[clap(long, value_parser)]
     probability_for_short_lifes: Option<i64>,
-
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -112,7 +111,6 @@ impl Config {
             .set_override_option("simulation.execution_id", args.execution_id)?
             .set_default("simulation.probability_to_act", 100.)?
             .set_default("simulation.probability_for_short_lifes", 50.)?
-            .set_override_option("simulation.execution_id", args.execution_id)?
             .set_override_option("simulation.probability_to_act", args.probability_to_act)?
             .set_override_option(
                 "simulation.probability_for_short_lifes",
