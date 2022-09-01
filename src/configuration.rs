@@ -50,10 +50,13 @@ pub struct Args {
     execution_id: Option<String>,
 
     /// Probability of a user to act on a tick. Default is 100 (%).
+    #[clap(long, value_parser)]
     probability_to_act: Option<i64>,
 
     /// Probability of a user to have a short life. Should be a number between 0 and 100. Default is 50 (%).
+    #[clap(long, value_parser)]
     probability_for_short_lifes: Option<i64>,
+
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -106,6 +109,7 @@ impl Config {
             .set_override_option("simulation.users_per_tick", args.users_per_tick)?
             .set_override_option("simulation.output", args.output)?
             .set_default("simulation.execution_id", time_now().to_string())?
+            .set_override_option("simulation.execution_id", args.execution_id)?
             .set_default("simulation.probability_to_act", 100.)?
             .set_default("simulation.probability_for_short_lifes", 50.)?
             .set_override_option("simulation.execution_id", args.execution_id)?

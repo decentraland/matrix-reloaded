@@ -60,6 +60,7 @@ impl User {
             State::Unregistered => self.register().await,
             State::Unauthenticated => self.log_in().await,
             State::LoggedIn => self.sync(&context.config).await,
+            State::LoggedIn => self.sync().await,
             State::Sync { .. } => self.socialize(context).await,
             State::LoggedOut => self.restart(&context.config).await,
         }
@@ -173,6 +174,7 @@ impl User {
     // - log out (not so social)
     async fn socialize(&mut self, context: &Context) {
         log::debug!("user '{}' act => {}", self.localpart, "SOCIALIZE");
+
         self.decrease_ticks_to_live();
         if let State::Sync {
             rooms,
