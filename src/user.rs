@@ -1,3 +1,4 @@
+use std::cmp::max;
 use std::sync::Arc;
 
 use crate::client::{Client, RegisterResult};
@@ -25,6 +26,7 @@ enum SocialAction {
     SendMessage,
     LogOut,
     UpdateStatus,
+    None,
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +38,7 @@ pub enum State {
         rooms: Arc<RwLock<Vec<OwnedRoomId>>>, // available rooms that user can send messages
         events: Arc<Mutex<Vec<SyncEvent>>>, // recent events to be processed and react, for instance to respond to friends or join rooms
         cancel_sync: Sender<bool>,          // cancel sync task
+        ticks_to_live: usize,               // ticks to live
     },
     LoggedOut,
 }
@@ -56,7 +59,7 @@ impl User {
         match &self.state {
             State::Unregistered => self.register().await,
             State::Unauthenticated => self.log_in().await,
-            State::LoggedIn => self.sync().await,
+            State::LoggedIn => self.sync(&context.config).await,
             State::Sync { .. } => self.socialize(context).await,
             State::LoggedOut => self.restart(&context.config).await,
         }
@@ -109,7 +112,7 @@ impl User {
         self.client.user_id().await
     }
 
-    async fn sync(&mut self) {
+    async fn sync(&mut self, config: &Config) {
         log::debug!("user '{}' act => {}", self.localpart, "SYNC");
         match self.client.sync().await {
             SyncResult::Ok {
@@ -133,10 +136,12 @@ impl User {
                     events.push(SyncEvent::UnreadRoom(joined_room.clone()));
                 }
 
+                let ticks_to_live = get_ticks_to_live(config);
                 self.state = State::Sync {
                     rooms: Arc::new(RwLock::new(joined_rooms)),
                     events: Arc::new(Mutex::new(events)),
                     cancel_sync,
+                    ticks_to_live,
                 };
                 log::debug!("user '{}' now is syncing", self.localpart);
             }
@@ -169,10 +174,12 @@ impl User {
     async fn socialize(&mut self, context: &Context) {
         log::debug!("user '{}' act => {}", self.localpart, "SOCIALIZE");
 
+        self.decrease_ticks_to_live();
         if let State::Sync {
             rooms,
             events,
             cancel_sync,
+            ticks_to_live,
         } = &self.state
         {
             self.read_sync_events(events).await;
@@ -184,20 +191,31 @@ impl User {
                 drop(events);
 
                 log::debug!("--- user '{}' going to start interaction", self.localpart);
-                match pick_random_action() {
-                    SocialAction::SendMessage => {
-                        self.send_message(pick_random_room(rooms).await).await
-                    }
-                    SocialAction::AddFriend => self.add_friend(context).await,
-                    SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
-                    SocialAction::UpdateStatus => self.update_status().await,
-                };
+                if ticks_to_live <= &0 {
+                    // it's time to log out
+                    self.log_out(cancel_sync.clone()).await;
+                } else {
+                    match pick_random_action(context.config.simulation.probability_to_act) {
+                        SocialAction::SendMessage => {
+                            self.send_message(pick_random_room(rooms).await).await
+                        }
+                        SocialAction::AddFriend => self.add_friend(context).await,
+                        SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
+                        SocialAction::UpdateStatus => self.update_status().await,
+                        SocialAction::None => log::debug!("user {} did nothing", self.localpart),
+                    };
+                }
             }
         } else {
             log::debug!("user cannot socialize if is not in sync state!");
         }
     }
 
+    fn decrease_ticks_to_live(&mut self) {
+        if let State::Sync { ticks_to_live, .. } = &mut self.state {
+            *ticks_to_live -= 1;
+        }
+    }
     async fn react(&self, event: SyncEvent) {
         log::debug!("user '{}' act => {}", self.localpart, "REACT");
         match event {
@@ -242,10 +260,12 @@ impl User {
         }
     }
 
+    /// Log out user and append new char to the localpart string so next iteration is a new user.
     async fn log_out(&mut self, cancel_sync: Sender<bool>) {
         log::debug!("user '{}' act => {}", self.localpart, "LOG OUT");
         cancel_sync.send(true).await.expect("channel open");
         self.state = State::LoggedOut;
+        self.localpart += "_";
     }
 
     async fn update_status(&self) {
@@ -269,16 +289,20 @@ fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
 }
 
 // we probably want to distribute these actions and don't make them random (more send messages than logouts)
-fn pick_random_action() -> SocialAction {
+fn pick_random_action(probability_to_act: usize) -> SocialAction {
     let mut rng = rand::thread_rng();
-    if rng.gen_ratio(1, 50) {
-        SocialAction::LogOut
-    } else if rng.gen_ratio(1, 25) {
-        SocialAction::UpdateStatus
-    } else if rng.gen_ratio(1, 3) {
-        SocialAction::AddFriend
+    if rng.gen_ratio(probability_to_act as u32, 100) {
+        if rng.gen_ratio(1, 50) {
+            SocialAction::LogOut
+        } else if rng.gen_ratio(1, 25) {
+            SocialAction::UpdateStatus
+        } else if rng.gen_ratio(1, 3) {
+            SocialAction::AddFriend
+        } else {
+            SocialAction::SendMessage
+        }
     } else {
-        SocialAction::SendMessage
+        SocialAction::None
     }
 }
 
@@ -288,4 +312,15 @@ async fn pick_random_room(rooms: &RwLock<Vec<OwnedRoomId>>) -> Option<OwnedRoomI
         .await
         .choose(&mut rand::thread_rng())
         .map(|room| room.to_owned())
+}
+
+/// Get random value for ticks to live related to the total of ticks in simulation,
+/// so users can be short or long lived.
+fn get_ticks_to_live(config: &Config) -> usize {
+    let mut rng = rand::thread_rng();
+    let short_lived = rng.gen_bool(config.simulation.probability_for_short_lifes as f64 / 100.);
+    match short_lived {
+        true => max(config.simulation.ticks / 100, 5),
+        false => max(config.simulation.ticks / 10, 10),
+    }
 }
