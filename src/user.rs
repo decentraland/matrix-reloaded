@@ -185,7 +185,7 @@ impl User {
             events,
             cancel_sync,
             ticks_to_live,
-            channels: _
+            channels
         } = &self.state
         {
             self.read_sync_events(events).await;
@@ -201,14 +201,18 @@ impl User {
                     // it's time to log out
                     self.log_out(cancel_sync.clone()).await;
                 } else {
-                    match pick_random_action(context.config.simulation.probability_to_act) {
+                    match pick_random_action(context.config.simulation.probability_to_act, context.config.simulation.channels_load) {
                         SocialAction::SendMessage => {
                             self.send_message(pick_random_room(rooms).await).await
                         }
                         SocialAction::AddFriend => self.add_friend(context).await,
                         SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
                         SocialAction::UpdateStatus => self.update_status().await,
-                        SocialAction::CreateChannel => self.create_channel().await,
+                        SocialAction::CreateChannel => {
+                            if channels.read().await.len() < context.config.simulation.channels_per_user {
+                                self.create_channel().await
+                            }
+                        }
                         SocialAction::None => log::debug!("user {} did nothing", self.localpart),
                     };
                 }
@@ -302,12 +306,12 @@ fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
 }
 
 // we probably want to distribute these actions and don't make them random (more send messages than logouts)
-fn pick_random_action(probability_to_act: usize) -> SocialAction {
+fn pick_random_action(probability_to_act: usize, channels_enabled: bool) -> SocialAction {
     let mut rng = rand::thread_rng();
     if rng.gen_ratio(probability_to_act as u32, 100) {
         if rng.gen_ratio(1, 75) {
             SocialAction::LogOut
-        } else if rng.gen_ratio(1,50) {
+        } else if rng.gen_ratio(1,50) && channels_enabled {
             SocialAction::CreateChannel
         } else if rng.gen_ratio(1, 25) {
             SocialAction::UpdateStatus
