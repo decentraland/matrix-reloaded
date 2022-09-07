@@ -4,13 +4,14 @@ use std::sync::Arc;
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
 use crate::configuration::Config;
-use crate::events::{Notifier, SyncEvent};
+use crate::events::{Notifier, SyncEvent, UserNotifier};
 use crate::simulation::Context;
 use crate::text::get_random_string;
 use async_channel::Sender;
 use futures::lock::Mutex;
 use matrix_sdk::locks::RwLock;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
+use rand::distributions::Alphanumeric;
 use rand::prelude::SliceRandom;
 use rand::Rng;
 
@@ -19,6 +20,7 @@ pub struct User {
     pub localpart: String,
     client: Client,
     pub state: State,
+    create_channels: u8
 }
 
 enum SocialAction {
@@ -27,6 +29,7 @@ enum SocialAction {
     LogOut,
     UpdateStatus,
     None,
+    CreateChannel
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +55,7 @@ impl User {
             localpart,
             client,
             state: State::Unregistered,
+            create_channels: 0
         }
     }
 
@@ -59,7 +63,7 @@ impl User {
         match &self.state {
             State::Unregistered => self.register().await,
             State::Unauthenticated => self.log_in().await,
-            State::LoggedIn => self.sync(&context.config).await,
+            State::LoggedIn => self.sync(&context.config, &context.user_notifier).await,
             State::Sync { .. } => self.socialize(context).await,
             State::LoggedOut => self.restart(&context.config).await,
         }
@@ -70,6 +74,11 @@ impl User {
             rooms.write().await.push(room_id.to_owned());
         }
     }
+
+    // async fn add_public_channel(&self, channel_id: &RoomId) {
+    //     log::debug!("user '{}' ADDING PUBLIC CHANNEL: {:?}", self.localpart, self.inworld_state.public_channels.read().await);
+    //     self.inworld_state.public_channels.write().await.push(channel_id.to_owned());
+    // }
 
     async fn restart(&mut self, config: &Config) {
         log::debug!("user '{}' act => {}", self.localpart, "RESTART");
@@ -112,9 +121,9 @@ impl User {
         self.client.user_id().await
     }
 
-    async fn sync(&mut self, config: &Config) {
+    async fn sync(&mut self, config: &Config, user_notifier: &UserNotifier) {
         log::debug!("user '{}' act => {}", self.localpart, "SYNC");
-        match self.client.sync().await {
+        match self.client.sync(user_notifier).await {
             SyncResult::Ok {
                 joined_rooms,
                 invited_rooms,
@@ -157,10 +166,9 @@ impl User {
         let new_events = self.client.read_sync_events().await;
         let mut events = events.lock().await;
         for event in new_events {
-            if let SyncEvent::RoomCreated(room_id) = event {
-                self.add_room(&room_id).await;
-            } else {
-                events.push(event);
+            match event {
+                SyncEvent::RoomCreated(room_id) => self.add_room(&room_id).await,
+                _ => events.push(event)
             }
         }
     }
@@ -170,10 +178,12 @@ impl User {
     // - send a message to a friend
     // - add a new friend
     // - update status
+    // - join or create channel
+    // - send messages to a channel
     // - log out (not so social)
     async fn socialize(&mut self, context: &Context) {
         log::debug!("user '{}' act => {}", self.localpart, "SOCIALIZE");
-
+        
         self.decrease_ticks_to_live();
         if let State::Sync {
             rooms,
@@ -203,6 +213,7 @@ impl User {
                         SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
                         SocialAction::UpdateStatus => self.update_status().await,
                         SocialAction::None => log::debug!("user {} did nothing", self.localpart),
+                        SocialAction::CreateChannel => self.create_channel().await,
                     };
                 }
             }
@@ -243,6 +254,16 @@ impl User {
             self.client.add_friend(&friend_id).await;
         } else {
             log::debug!("there are no users to add as friend :(");
+        }
+    }
+
+    async fn create_channel(&mut self) {
+        if self.create_channels == 0 {
+            let mut channel_name: String = rand::thread_rng().sample_iter(&Alphanumeric).take(7).map(char::from).collect();
+            log::debug!("user '{}' act => {} => {}", self.localpart, "CREATE CHANNEL", channel_name);
+            channel_name.push_str("-Pchannel");
+            self.create_channels = 1;
+            self.client.create_channel(channel_name).await
         }
     }
 
@@ -290,20 +311,21 @@ fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
 
 // we probably want to distribute these actions and don't make them random (more send messages than logouts)
 fn pick_random_action(probability_to_act: usize) -> SocialAction {
-    let mut rng = rand::thread_rng();
-    if rng.gen_ratio(probability_to_act as u32, 100) {
-        if rng.gen_ratio(1, 50) {
-            SocialAction::LogOut
-        } else if rng.gen_ratio(1, 25) {
-            SocialAction::UpdateStatus
-        } else if rng.gen_ratio(1, 3) {
-            SocialAction::AddFriend
-        } else {
-            SocialAction::SendMessage
-        }
-    } else {
-        SocialAction::None
-    }
+    // let mut rng = rand::thread_rng();
+    // if rng.gen_ratio(probability_to_act as u32, 100) {
+    //     if rng.gen_ratio(1, 50) {
+    //         SocialAction::LogOut
+    //     } else if rng.gen_ratio(1, 25) {
+    //         SocialAction::UpdateStatus
+    //     } else if rng.gen_ratio(1, 3) {
+    //         SocialAction::AddFriend
+    //     } else {
+    //         SocialAction::SendMessage
+    //     }
+    // } else {
+    //     SocialAction::None
+    // }
+    SocialAction::CreateChannel
 }
 
 async fn pick_random_room(rooms: &RwLock<Vec<OwnedRoomId>>) -> Option<OwnedRoomId> {
