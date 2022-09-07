@@ -1,6 +1,7 @@
 use crate::configuration::Config;
 use crate::events::Event;
 use crate::events::EventCollector;
+use crate::events::UserNotifications;
 use crate::progress::create_progress;
 use crate::progress::Progress;
 use crate::report::Report;
@@ -11,11 +12,13 @@ use crate::user::State;
 use crate::user::User;
 use futures::future::join_all;
 use matrix_sdk::locks::RwLock;
+use matrix_sdk::ruma::OwnedRoomId;
 use matrix_sdk::ruma::OwnedUserId;
 use rand::prelude::IteratorRandom;
+use std::collections::HashSet;
 use std::{collections::BTreeMap, ops::Sub, sync::Arc, time::Instant};
 use tokio::{
-    sync::mpsc::{self, Sender},
+    sync::mpsc::{self, Sender, Receiver},
     task::JoinHandle,
     time::sleep,
 };
@@ -35,6 +38,12 @@ pub struct Context {
     pub syncing_users: Vec<OwnedUserId>,
     pub config: Arc<Config>,
     notifier: Sender<Event>,
+    pub user_notifier: Sender<UserNotifications>,
+    pub inworld_state: Arc<InWorldState>
+}
+
+pub struct InWorldState {
+    pub channels: Arc<RwLock<HashSet<OwnedRoomId>>>
 }
 
 impl Entity {
@@ -104,9 +113,25 @@ impl Simulation {
         let event_collector = EventCollector::new();
         let events_report = event_collector.start(rx);
 
+        let (user_notification_sender, user_notification_receiver) = mpsc::channel::<UserNotifications>(100);
+
+        let inworld_state = Arc::new(InWorldState {
+            channels: Arc::new(RwLock::new(HashSet::new()))
+        });
+
+        let context = Arc::new(Context {
+            syncing_users: self.get_syncing_users().await,
+            config: self.config.clone(),
+            notifier: tx.clone(),
+            user_notifier: user_notification_sender.clone(),
+            inworld_state
+        });
+
+        tokio::spawn(Simulation::collect_user_notifications(user_notification_receiver, context.clone()));
+
         // start simulation
         for _ in 0..self.config.simulation.ticks {
-            self.tick(&tx).await;
+            self.tick(context.clone()).await;
             self.track_users().await;
         }
 
@@ -130,7 +155,7 @@ impl Simulation {
         tx.send(Event::Finish).await.expect("channel open");
     }
 
-    async fn tick(&mut self, tx: &Sender<Event>) {
+    async fn tick(&mut self, context: Arc<Context>) {
         let tick_start = Instant::now();
         let tick_duration = &mut self.config.simulation.tick_duration.clone();
 
@@ -138,12 +163,6 @@ impl Simulation {
         let mut join_handles = vec![];
 
         let user_ids = self.pick_users(self.config.simulation.users_per_tick);
-
-        let context = Arc::new(Context {
-            syncing_users: self.get_syncing_users().await,
-            config: self.config.clone(),
-            notifier: tx.clone(),
-        });
 
         for user_id in user_ids {
             let entity = self.entities.get(&user_id).expect("user to exist");
@@ -196,5 +215,17 @@ impl Simulation {
             }
         }
         online_users
+    }
+
+    async fn collect_user_notifications(mut notification_receiver: Receiver<UserNotifications>, context: Arc<Context>) {
+        log::debug!("Spawing collect user notification");
+        while let Some(event) = notification_receiver.recv().await {
+            match event {
+                UserNotifications::NewChannel(room_id) => {
+                    log::debug!("collect_user_notifications READING: {}", room_id);
+                    context.inworld_state.channels.write().await.insert(room_id);
+                }
+            }
+        }
     }
 }
