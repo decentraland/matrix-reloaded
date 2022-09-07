@@ -1,6 +1,6 @@
 use crate::{
     configuration::{get_homeserver_url, Config},
-    events::{Event, Notifier, SyncEvent, UserRequest, UserNotifier, UserNotifications},
+    events::{Event, Notifier, SyncEvent, UserNotifications, UserNotifier, UserRequest},
     text::get_random_string,
 };
 use async_channel::Sender;
@@ -24,8 +24,9 @@ use matrix_sdk::ruma::{
     assign,
     events::{
         room::{
+            create::OriginalSyncRoomCreateEvent,
             member::StrippedRoomMemberEvent,
-            message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent}, create::OriginalSyncRoomCreateEvent,
+            message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent},
         },
         AnyMessageLikeEventContent,
     },
@@ -257,8 +258,8 @@ impl Client {
                         channels.push(id.to_owned());
                         indexes.push(i);
                     }
-                },
-                None => log::debug!("room not found in store {}", id)
+                }
+                None => log::debug!("room not found in store {}", id),
             }
         }
 
@@ -272,7 +273,7 @@ impl Client {
             joined_rooms,
             invited_rooms,
             cancel_sync,
-            channels
+            channels,
         }
     }
 
@@ -366,10 +367,13 @@ impl Client {
 
         let response = client.create_room(request).await;
         self.event_notifier
-            .send(Event::RequestDuration((UserRequest::CreateChannel, now.elapsed())))
+            .send(Event::RequestDuration((
+                UserRequest::CreateChannel,
+                now.elapsed(),
+            )))
             .await
             .expect("channel should not be close");
-        
+
         match response {
             Err(Api(Server(Known(RumaApiError::ClientApi(Error {
                 kind: ErrorKind::RoomInUse,
@@ -381,12 +385,11 @@ impl Client {
                     .send(Event::Error((UserRequest::CreateRoom, e)))
                     .await
                     .expect("channel should not be closed");
-            },
+            }
             Ok(response) => {
                 log::debug!("channel created succesfully, {}", response.room_id);
             }
         }
-
     }
 
     pub async fn join_room(&self, room_id: &RoomId) {
@@ -500,30 +503,38 @@ async fn add_invite_event_handler(
         .await;
 }
 
-async fn add_created_room_event_handler(client: &matrix_sdk::Client, user_notifier: &UserNotifier, tx: &Sender<SyncEvent>) {
-    client.register_event_handler({
-        let user_notifier = user_notifier.clone();
-        let tx = tx.clone();
-        move |_event:OriginalSyncRoomCreateEvent, room: Room| {
+async fn add_created_room_event_handler(
+    client: &matrix_sdk::Client,
+    user_notifier: &UserNotifier,
+    tx: &Sender<SyncEvent>,
+) {
+    client
+        .register_event_handler({
             let user_notifier = user_notifier.clone();
             let tx = tx.clone();
-            async move {
-                on_room_created(room, user_notifier, tx).await;
+            move |_event: OriginalSyncRoomCreateEvent, room: Room| {
+                let user_notifier = user_notifier.clone();
+                let tx = tx.clone();
+                async move {
+                    on_room_created(room, user_notifier, tx).await;
+                }
             }
-        }
-    }).await;
+        })
+        .await;
 }
 
 async fn on_room_created(room: Room, user_notifier: UserNotifier, tx: Sender<SyncEvent>) {
     if !room.is_direct() && room.is_public() {
         let room_id = room.room_id();
         // Notify simulation about a new channel in order to add it to the in-world state
-        user_notifier.send(UserNotifications::NewChannel(room_id.to_owned())).await.expect("channel to be open");
+        user_notifier
+            .send(UserNotifications::NewChannel(room_id.to_owned()))
+            .await
+            .expect("channel to be open");
         // Notify user about the channel in order to add it to his channels list
-        tx
-        .send(SyncEvent::ChannelCreated(room_id.to_owned()))
-        .await
-        .expect("channel to be open");
+        tx.send(SyncEvent::ChannelCreated(room_id.to_owned()))
+            .await
+            .expect("channel to be open");
     }
 }
 

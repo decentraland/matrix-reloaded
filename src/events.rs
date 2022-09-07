@@ -26,12 +26,12 @@ pub enum UserRequest {
     SendMessage,
     UpdateStatus,
     Messages,
-    CreateChannel
+    CreateChannel,
 }
 
 #[derive(Debug)]
 pub enum UserNotifications {
-    NewChannel(OwnedRoomId)
+    NewChannel(OwnedRoomId),
 }
 
 #[derive(Debug)]
@@ -49,7 +49,7 @@ pub enum SyncEvent {
     RoomCreated(OwnedRoomId),
     UnreadRoom(OwnedRoomId),
     MessageReceived(OwnedRoomId, String),
-    ChannelCreated(OwnedRoomId)
+    ChannelCreated(OwnedRoomId),
 }
 
 #[derive(Default)]

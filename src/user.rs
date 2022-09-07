@@ -130,7 +130,7 @@ impl User {
                 joined_rooms,
                 invited_rooms,
                 cancel_sync,
-                channels
+                channels,
             } => {
                 log::debug!("user '{}' has {} rooms", self.localpart, joined_rooms.len());
                 log::debug!("user '{}' has {} channels", self.localpart, channels.len());
@@ -174,13 +174,9 @@ impl User {
         let mut events = events.lock().await;
         for event in new_events {
             match event {
-                SyncEvent::RoomCreated(room_id) => {
-                    self.add_room(&room_id).await
-                },
-                SyncEvent::ChannelCreated(room_id) => {
-                    self.add_channel(&room_id).await
-                },
-                _ => events.push(event)
+                SyncEvent::RoomCreated(room_id) => self.add_room(&room_id).await,
+                SyncEvent::ChannelCreated(room_id) => self.add_channel(&room_id).await,
+                _ => events.push(event),
             }
         }
     }
@@ -200,7 +196,7 @@ impl User {
             events,
             cancel_sync,
             ticks_to_live,
-            channels
+            channels,
         } = &self.state
         {
             self.read_sync_events(events).await;
@@ -216,7 +212,10 @@ impl User {
                     // it's time to log out
                     self.log_out(cancel_sync.clone()).await;
                 } else {
-                    match pick_random_action(context.config.simulation.probability_to_act, context.config.simulation.channels_load) {
+                    match pick_random_action(
+                        context.config.simulation.probability_to_act,
+                        context.config.simulation.channels_load,
+                    ) {
                         SocialAction::SendMessage => {
                             self.send_message(pick_random_room(rooms).await).await
                         }
@@ -224,7 +223,10 @@ impl User {
                         SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
                         SocialAction::UpdateStatus => self.update_status().await,
                         SocialAction::CreateChannel => {
-                            if channels.read().await.len() < context.config.simulation.channels_per_user && context.config.simulation.channels_load {
+                            if channels.read().await.len()
+                                < context.config.simulation.channels_per_user
+                                && context.config.simulation.channels_load
+                            {
                                 self.create_channel().await
                             }
                         }
@@ -273,8 +275,17 @@ impl User {
     }
 
     async fn create_channel(&self) {
-        let channel_name: String = rand::thread_rng().sample_iter(&Alphanumeric).take(7).map(char::from).collect();
-        log::debug!("user '{}' act => {} => {}", self.localpart, "CREATE CHANNEL", channel_name);
+        let channel_name: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(7)
+            .map(char::from)
+            .collect();
+        log::debug!(
+            "user '{}' act => {} => {}",
+            self.localpart,
+            "CREATE CHANNEL",
+            channel_name
+        );
         self.client.create_channel(channel_name).await
     }
 
@@ -326,7 +337,7 @@ fn pick_random_action(probability_to_act: usize, channels_enabled: bool) -> Soci
     if rng.gen_ratio(probability_to_act as u32, 100) {
         if rng.gen_ratio(1, 75) {
             SocialAction::LogOut
-        } else if rng.gen_ratio(1,50) && channels_enabled {
+        } else if rng.gen_ratio(1, 50) && channels_enabled {
             SocialAction::CreateChannel
         } else if rng.gen_ratio(1, 25) {
             SocialAction::UpdateStatus

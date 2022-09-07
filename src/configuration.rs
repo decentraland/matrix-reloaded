@@ -81,7 +81,7 @@ pub struct Simulation {
     pub probability_to_act: usize,
     pub probability_for_short_lifes: usize,
     pub channels_load: bool,
-    pub channels_per_user: usize
+    pub channels_per_user: usize,
 }
 
 #[derive(Debug, Deserialize, Clone)]
