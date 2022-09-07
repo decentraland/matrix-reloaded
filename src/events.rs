@@ -26,11 +26,12 @@ pub enum UserRequest {
     SendMessage,
     UpdateStatus,
     Messages,
-    CreateChannel
+    CreateChannel,
 }
 #[derive(Debug)]
 pub enum UserNotifications {
-    NewChannel(OwnedRoomId)
+    NewChannel(OwnedRoomId),
+    Other,
 }
 
 #[derive(Debug)]

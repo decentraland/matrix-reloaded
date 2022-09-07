@@ -1,9 +1,9 @@
-mod client;
+pub mod client;
 pub mod configuration;
-mod events;
+pub mod events;
 pub mod progress;
 mod report;
 pub mod simulation;
 mod text;
 mod time;
-mod user;
+pub mod user;

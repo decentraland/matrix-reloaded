@@ -1,6 +1,6 @@
 use crate::{
     configuration::{get_homeserver_url, Config},
-    events::{Event, Notifier, SyncEvent, UserRequest, UserNotifier, UserNotifications},
+    events::{Event, Notifier, SyncEvent, UserNotifications, UserNotifier, UserRequest},
     text::get_random_string,
 };
 use async_channel::Sender;
@@ -24,8 +24,9 @@ use matrix_sdk::ruma::{
     assign,
     events::{
         room::{
+            create::{OriginalSyncRoomCreateEvent, RoomCreateEventContent},
             member::StrippedRoomMemberEvent,
-            message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent}, create::RoomCreateEventContent,
+            message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent},
         },
         AnyMessageLikeEventContent, StrippedStateEvent,
     },
@@ -302,12 +303,19 @@ impl Client {
         let now = Instant::now();
 
         let response = client.create_room(request).await;
-        log::debug!("create channel with alias {} response {:#?}", channel_name, response);
+        log::debug!(
+            "create channel with alias {} response {:#?}",
+            channel_name,
+            response
+        );
         self.event_notifier
-            .send(Event::RequestDuration((UserRequest::CreateChannel, now.elapsed())))
+            .send(Event::RequestDuration((
+                UserRequest::CreateChannel,
+                now.elapsed(),
+            )))
             .await
             .expect("channel should not be close");
-        
+
         match response {
             Err(Api(Server(Known(RumaApiError::ClientApi(Error {
                 kind: ErrorKind::RoomInUse,
@@ -319,12 +327,11 @@ impl Client {
                     .send(Event::Error((UserRequest::CreateRoom, e)))
                     .await
                     .expect("channel should not be closed");
-            },
+            }
             Ok(response) => {
                 log::debug!("channel created succesfully, {}", response.room_id);
             }
         }
-
     }
 
     pub async fn add_friend(&self, friend_id: &UserId) {
@@ -482,22 +489,32 @@ async fn add_invite_event_handler(
 
 async fn add_created_room_event_handler(client: &matrix_sdk::Client, user_notifier: &UserNotifier) {
     log::debug!("ADDING add_created_room_event_handler");
-    client.register_event_handler({
-        let user_notifier = user_notifier.clone();
-        move |event:StrippedStateEvent<RoomCreateEventContent>, room: Room| {
-            log::debug!("HANDLING: add_created_room_event_handler, creator: {}, room: {}, direct: {}", event.content.creator, room.room_id(), room.is_direct());
+    client
+        .register_event_handler({
             let user_notifier = user_notifier.clone();
-            async move {
-                on_room_created(room, user_notifier).await;
+            move |event: OriginalSyncRoomCreateEvent, room: Room| {
+                log::debug!(
+                    "HANDLING: add_created_room_event_handler, creator: {}, room: {}, direct: {}",
+                    event.content.creator,
+                    room.room_id(),
+                    room.is_direct()
+                );
+                let user_notifier = user_notifier.clone();
+                async move {
+                    on_room_created(room, user_notifier).await;
+                }
             }
-        }
-    }).await;
+        })
+        .await;
 }
 
 async fn on_room_created(room: Room, user_notifier: UserNotifier) {
-    log::debug!("CALLED on_room_created {}", {room.room_id()});
+    log::debug!("CALLED on_room_created {}", { room.room_id() });
     if !room.is_direct() && room.is_public() {
-        user_notifier.send(UserNotifications::NewChannel(room.room_id().to_owned())).await.expect("channel to be open")
+        user_notifier
+            .send(UserNotifications::NewChannel(room.room_id().to_owned()))
+            .await
+            .expect("channel to be open")
     }
 }
 

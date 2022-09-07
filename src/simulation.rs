@@ -18,7 +18,7 @@ use rand::prelude::IteratorRandom;
 use std::collections::HashSet;
 use std::{collections::BTreeMap, ops::Sub, sync::Arc, time::Instant};
 use tokio::{
-    sync::mpsc::{self, Sender, Receiver},
+    sync::mpsc::{self, Receiver, Sender},
     task::JoinHandle,
     time::sleep,
 };
@@ -39,12 +39,12 @@ pub struct Context {
     pub config: Arc<Config>,
     notifier: Sender<Event>,
     pub inworld_state: Arc<InWorldState>,
-    pub user_notifier: Sender<UserNotifications>
+    pub user_notifier: Sender<UserNotifications>,
 }
 
 #[derive(Debug)]
 pub struct InWorldState {
-    pub public_channels: Arc<RwLock<HashSet<OwnedRoomId>>>
+    pub public_channels: Arc<RwLock<HashSet<OwnedRoomId>>>,
 }
 
 impl Entity {
@@ -118,7 +118,7 @@ impl Simulation {
 
         // in world state
         let inworld_state = Arc::new(InWorldState {
-            public_channels: Arc::new(RwLock::new(HashSet::new()))
+            public_channels: Arc::new(RwLock::new(HashSet::new())),
         });
 
         let context = Arc::new(Context {
@@ -126,10 +126,13 @@ impl Simulation {
             config: self.config.clone(),
             notifier: tx.clone(),
             user_notifier: notification_sender.clone(),
-            inworld_state
+            inworld_state,
         });
 
-        tokio::spawn(Simulation::collect_user_notifications(notification_receiver, context.clone()));
+        tokio::spawn(Simulation::collect_user_notifications(
+            notification_receiver,
+            context.clone(),
+        ));
 
         // start simulation
         for _ in 0..self.config.simulation.ticks {
@@ -219,14 +222,23 @@ impl Simulation {
         online_users
     }
 
-    async fn collect_user_notifications(mut notification_receiver: Receiver<UserNotifications>, context: Arc<Context>) {
+    async fn collect_user_notifications(
+        mut notification_receiver: Receiver<UserNotifications>,
+        context: Arc<Context>,
+    ) {
         log::debug!("Spawing collect user notification");
         while let Some(event) = notification_receiver.recv().await {
             match event {
                 UserNotifications::NewChannel(room_id) => {
                     log::debug!("collect_user_notifications READING: {}", room_id);
-                    context.inworld_state.public_channels.write().await.insert(room_id);
+                    context
+                        .inworld_state
+                        .public_channels
+                        .write()
+                        .await
+                        .insert(room_id);
                 }
+                _ => {}
             }
         }
     }

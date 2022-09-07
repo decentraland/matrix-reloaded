@@ -65,7 +65,7 @@ pub struct Server {
 }
 
 #[serde_as]
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct Simulation {
     pub ticks: usize,
     #[serde_as(as = "DurationSeconds<u64>")]
