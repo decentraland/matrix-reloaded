@@ -4,13 +4,14 @@ use std::sync::Arc;
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
 use crate::configuration::Config;
-use crate::events::{Notifier, SyncEvent};
+use crate::events::{Notifier, SyncEvent, UserNotifier};
 use crate::simulation::Context;
 use crate::text::get_random_string;
 use async_channel::Sender;
 use futures::lock::Mutex;
 use matrix_sdk::locks::RwLock;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
+use rand::distributions::Alphanumeric;
 use rand::prelude::SliceRandom;
 use rand::Rng;
 
@@ -26,6 +27,7 @@ enum SocialAction {
     SendMessage,
     LogOut,
     UpdateStatus,
+    CreateChannel,
     None,
 }
 
@@ -35,7 +37,8 @@ pub enum State {
     Unregistered,
     LoggedIn,
     Sync {
-        rooms: Arc<RwLock<Vec<OwnedRoomId>>>, // available rooms that user can send messages
+        rooms: Arc<RwLock<Vec<OwnedRoomId>>>, // available rooms that user can send messages (personal/direct rooms)
+        channels: Arc<RwLock<Vec<OwnedRoomId>>>, // available channels that user can send messages (he joined or created)
         events: Arc<Mutex<Vec<SyncEvent>>>, // recent events to be processed and react, for instance to respond to friends or join rooms
         cancel_sync: Sender<bool>,          // cancel sync task
         ticks_to_live: usize,               // ticks to live
@@ -59,7 +62,7 @@ impl User {
         match &self.state {
             State::Unregistered => self.register().await,
             State::Unauthenticated => self.log_in().await,
-            State::LoggedIn => self.sync(&context.config).await,
+            State::LoggedIn => self.sync(&context.config, &context.user_notifier).await,
             State::Sync { .. } => self.socialize(context).await,
             State::LoggedOut => self.restart(&context.config).await,
         }
@@ -112,13 +115,14 @@ impl User {
         self.client.user_id().await
     }
 
-    async fn sync(&mut self, config: &Config) {
+    async fn sync(&mut self, config: &Config, user_notifier: &UserNotifier) {
         log::debug!("user '{}' act => {}", self.localpart, "SYNC");
-        match self.client.sync().await {
+        match self.client.sync(user_notifier).await {
             SyncResult::Ok {
                 joined_rooms,
                 invited_rooms,
                 cancel_sync,
+                channels
             } => {
                 log::debug!("user '{}' has {} rooms", self.localpart, joined_rooms.len());
                 log::debug!(
@@ -140,6 +144,7 @@ impl User {
                 self.state = State::Sync {
                     rooms: Arc::new(RwLock::new(joined_rooms)),
                     events: Arc::new(Mutex::new(events)),
+                    channels: Arc::new(RwLock::new(channels)),
                     cancel_sync,
                     ticks_to_live,
                 };
@@ -180,6 +185,7 @@ impl User {
             events,
             cancel_sync,
             ticks_to_live,
+            channels: _
         } = &self.state
         {
             self.read_sync_events(events).await;
@@ -202,6 +208,7 @@ impl User {
                         SocialAction::AddFriend => self.add_friend(context).await,
                         SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
                         SocialAction::UpdateStatus => self.update_status().await,
+                        SocialAction::CreateChannel => self.create_channel().await,
                         SocialAction::None => log::debug!("user {} did nothing", self.localpart),
                     };
                 }
@@ -244,6 +251,12 @@ impl User {
         } else {
             log::debug!("there are no users to add as friend :(");
         }
+    }
+
+    async fn create_channel(&self) {
+        let channel_name: String = rand::thread_rng().sample_iter(&Alphanumeric).take(7).map(char::from).collect();
+        log::debug!("user '{}' act => {} => {}", self.localpart, "CREATE CHANNEL", channel_name);
+        self.client.create_channel(channel_name).await
     }
 
     async fn join(&self, room: &RoomId) {
@@ -292,8 +305,10 @@ fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
 fn pick_random_action(probability_to_act: usize) -> SocialAction {
     let mut rng = rand::thread_rng();
     if rng.gen_ratio(probability_to_act as u32, 100) {
-        if rng.gen_ratio(1, 50) {
+        if rng.gen_ratio(1, 75) {
             SocialAction::LogOut
+        } else if rng.gen_ratio(1,50) {
+            SocialAction::CreateChannel
         } else if rng.gen_ratio(1, 25) {
             SocialAction::UpdateStatus
         } else if rng.gen_ratio(1, 3) {
