@@ -237,7 +237,7 @@ impl Client {
 
         add_invite_event_handler(client, tx, &user_id).await;
         add_room_message_event_handler(client, tx, &user_id, &self.event_notifier).await;
-        add_created_room_event_handler(client, user_notifier).await;
+        add_created_room_event_handler(client, user_notifier, tx).await;
 
         let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
 
@@ -253,6 +253,7 @@ impl Client {
             match client.get_room(id) {
                 Some(room) => {
                     if !room.is_direct() && room.is_public() {
+                        log::debug!("joined room {} is public", id);
                         channels.push(id.to_owned());
                         indexes.push(i);
                     }
@@ -263,6 +264,7 @@ impl Client {
 
         // remove public rooms from joined room
         for i in indexes {
+            log::debug!("removing {i} from joined rooms");
             joined_rooms.remove(i);
         }
 
@@ -498,21 +500,30 @@ async fn add_invite_event_handler(
         .await;
 }
 
-async fn add_created_room_event_handler(client: &matrix_sdk::Client, user_notifier: &UserNotifier) {
+async fn add_created_room_event_handler(client: &matrix_sdk::Client, user_notifier: &UserNotifier, tx: &Sender<SyncEvent>) {
     client.register_event_handler({
         let user_notifier = user_notifier.clone();
+        let tx = tx.clone();
         move |_event:OriginalSyncRoomCreateEvent, room: Room| {
             let user_notifier = user_notifier.clone();
+            let tx = tx.clone();
             async move {
-                on_room_created(room, user_notifier).await;
+                on_room_created(room, user_notifier, tx).await;
             }
         }
     }).await;
 }
 
-async fn on_room_created(room: Room, user_notifier: UserNotifier) {
+async fn on_room_created(room: Room, user_notifier: UserNotifier, tx: Sender<SyncEvent>) {
     if !room.is_direct() && room.is_public() {
-        user_notifier.send(UserNotifications::NewChannel(room.room_id().to_owned())).await.expect("channel to be open")
+        let room_id = room.room_id();
+        // Notify simulation about a new channel in order to add it to the in-world state
+        user_notifier.send(UserNotifications::NewChannel(room_id.to_owned())).await.expect("channel to be open");
+        // Notify user about the channel in order to add it to his channels list
+        tx
+        .send(SyncEvent::ChannelCreated(room_id.to_owned()))
+        .await
+        .expect("channel to be open");
     }
 }
 

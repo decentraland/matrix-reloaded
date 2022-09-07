@@ -49,6 +49,7 @@ pub enum SyncEvent {
     RoomCreated(OwnedRoomId),
     UnreadRoom(OwnedRoomId),
     MessageReceived(OwnedRoomId, String),
+    ChannelCreated(OwnedRoomId)
 }
 
 #[derive(Default)]

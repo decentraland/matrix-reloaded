@@ -1,4 +1,6 @@
 use std::cmp::max;
+use std::collections::HashSet;
+use std::iter::FromIterator;
 use std::sync::Arc;
 
 use crate::client::{Client, RegisterResult};
@@ -38,7 +40,7 @@ pub enum State {
     LoggedIn,
     Sync {
         rooms: Arc<RwLock<Vec<OwnedRoomId>>>, // available rooms that user can send messages (personal/direct rooms)
-        channels: Arc<RwLock<Vec<OwnedRoomId>>>, // available channels that user can send messages (he joined or created)
+        channels: Arc<RwLock<HashSet<OwnedRoomId>>>, // available channels that user can send messages (he joined or created)
         events: Arc<Mutex<Vec<SyncEvent>>>, // recent events to be processed and react, for instance to respond to friends or join rooms
         cancel_sync: Sender<bool>,          // cancel sync task
         ticks_to_live: usize,               // ticks to live
@@ -71,6 +73,12 @@ impl User {
     async fn add_room(&self, room_id: &RoomId) {
         if let State::Sync { rooms, .. } = &self.state {
             rooms.write().await.push(room_id.to_owned());
+        }
+    }
+
+    async fn add_channel(&self, room_id: &RoomId) {
+        if let State::Sync { channels, .. } = &self.state {
+            channels.write().await.insert(room_id.to_owned());
         }
     }
 
@@ -125,6 +133,7 @@ impl User {
                 channels
             } => {
                 log::debug!("user '{}' has {} rooms", self.localpart, joined_rooms.len());
+                log::debug!("user '{}' has {} channels", self.localpart, channels.len());
                 log::debug!(
                     "user '{}' has been invited to {} rooms",
                     self.localpart,
@@ -139,6 +148,8 @@ impl User {
                 for joined_room in &joined_rooms {
                     events.push(SyncEvent::UnreadRoom(joined_room.clone()));
                 }
+
+                let channels = HashSet::from_iter(channels.iter().cloned());
 
                 let ticks_to_live = get_ticks_to_live(config);
                 self.state = State::Sync {
@@ -162,10 +173,14 @@ impl User {
         let new_events = self.client.read_sync_events().await;
         let mut events = events.lock().await;
         for event in new_events {
-            if let SyncEvent::RoomCreated(room_id) = event {
-                self.add_room(&room_id).await;
-            } else {
-                events.push(event);
+            match event {
+                SyncEvent::RoomCreated(room_id) => {
+                    self.add_room(&room_id).await
+                },
+                SyncEvent::ChannelCreated(room_id) => {
+                    self.add_channel(&room_id).await
+                },
+                _ => events.push(event)
             }
         }
     }
@@ -209,7 +224,7 @@ impl User {
                         SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
                         SocialAction::UpdateStatus => self.update_status().await,
                         SocialAction::CreateChannel => {
-                            if channels.read().await.len() < context.config.simulation.channels_per_user {
+                            if channels.read().await.len() < context.config.simulation.channels_per_user && context.config.simulation.channels_load {
                                 self.create_channel().await
                             }
                         }
