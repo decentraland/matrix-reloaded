@@ -71,7 +71,10 @@ impl User {
     }
 
     async fn add_room(&self, room_id: &RoomId) {
-        if let State::Sync { direct_messages, .. } = &self.state {
+        if let State::Sync {
+            direct_messages, ..
+        } = &self.state
+        {
             direct_messages.write().await.push(room_id.to_owned());
         }
     }
@@ -132,7 +135,11 @@ impl User {
                 cancel_sync,
                 channels,
             } => {
-                log::debug!("user '{}' has {} rooms", self.localpart, direct_messages.len());
+                log::debug!(
+                    "user '{}' has {} rooms",
+                    self.localpart,
+                    direct_messages.len()
+                );
                 log::debug!("user '{}' has {} channels", self.localpart, channels.len());
                 log::debug!(
                     "user '{}' has been invited to {} rooms",
@@ -217,7 +224,8 @@ impl User {
                         context.config.simulation.channels_load,
                     ) {
                         SocialAction::SendMessage => {
-                            self.send_message(pick_random_room(direct_messages).await).await
+                            self.send_message(pick_random_room(direct_messages).await)
+                                .await
                         }
                         SocialAction::AddFriend => self.add_friend(context).await,
                         SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
