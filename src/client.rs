@@ -253,7 +253,7 @@ impl Client {
         for (i, id) in direct_messages.iter().enumerate() {
             match client.get_room(id) {
                 Some(room) => {
-                    if !room.is_direct() && room.is_public() {
+                    if is_channel(&room) {
                         channels.push(id.to_owned());
                         indexes.push(i);
                     }
@@ -523,7 +523,7 @@ async fn add_created_room_event_handler(
 }
 
 async fn on_room_created(room: Room, user_notifier: UserNotifier, tx: Sender<SyncEvent>) {
-    if !room.is_direct() && room.is_public() {
+    if is_channel(&room) {
         let room_id = room.room_id();
         // Notify simulation about a new channel in order to add it to the in-world state
         user_notifier
@@ -593,4 +593,8 @@ fn get_room_alias(first: &UserId, second: &UserId) -> String {
     let mut names = vec![first.localpart(), second.localpart()];
     names.sort();
     names.join("-")
+}
+
+fn is_channel(room: &Room) -> bool {
+    !room.is_direct() && room.is_public()
 }
