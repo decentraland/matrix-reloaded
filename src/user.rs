@@ -136,7 +136,7 @@ impl User {
                 channels,
             } => {
                 log::debug!(
-                    "user '{}' has {} rooms",
+                    "user '{}' has {} dm rooms",
                     self.localpart,
                     direct_messages.len()
                 );
