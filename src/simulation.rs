@@ -39,11 +39,7 @@ pub struct Context {
     pub config: Arc<Config>,
     notifier: Sender<Event>,
     pub user_notifier: Sender<UserNotifications>,
-    pub inworld_state: Arc<InWorldState>,
-}
-
-pub struct InWorldState {
-    pub channels: Arc<RwLock<HashSet<OwnedRoomId>>>,
+    pub channels: Arc<RwLock<HashSet<OwnedRoomId>>>, // public channels created by all users
 }
 
 impl Entity {
@@ -116,16 +112,12 @@ impl Simulation {
         let (user_notification_sender, user_notification_receiver) =
             mpsc::channel::<UserNotifications>(100);
 
-        let inworld_state = Arc::new(InWorldState {
-            channels: Arc::new(RwLock::new(HashSet::new())),
-        });
-
         let context = Arc::new(Context {
             syncing_users: self.get_syncing_users().await,
             config: self.config.clone(),
             notifier: tx.clone(),
             user_notifier: user_notification_sender.clone(),
-            inworld_state,
+            channels: Arc::new(RwLock::new(HashSet::new())),
         });
 
         tokio::spawn(Simulation::collect_user_notifications(
@@ -230,7 +222,7 @@ impl Simulation {
             match event {
                 UserNotifications::NewChannel(room_id) => {
                     log::debug!("collect_user_notifications READING: {}", room_id);
-                    context.inworld_state.channels.write().await.insert(room_id);
+                    context.channels.write().await.insert(room_id);
                 }
             }
         }
