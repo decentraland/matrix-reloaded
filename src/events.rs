@@ -11,7 +11,8 @@ use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 
-pub type Notifier = Sender<Event>;
+pub type SyncEventsSender = Sender<Event>;
+pub type UserNotificationsSender = Sender<UserNotifications>;
 
 #[derive(Serialize, Debug, Eq, Hash, PartialEq, Clone, Display)]
 #[serde(rename_all = "snake_case")]
@@ -25,6 +26,12 @@ pub enum UserRequest {
     SendMessage,
     UpdateStatus,
     Messages,
+    CreateChannel,
+}
+
+#[derive(Debug)]
+pub enum UserNotifications {
+    NewChannel(OwnedRoomId),
 }
 
 #[derive(Debug)]
@@ -42,6 +49,7 @@ pub enum SyncEvent {
     RoomCreated(OwnedRoomId),
     UnreadRoom(OwnedRoomId),
     MessageReceived(OwnedRoomId, String),
+    ChannelCreated(OwnedRoomId),
 }
 
 #[derive(Default)]

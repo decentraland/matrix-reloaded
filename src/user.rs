@@ -1,16 +1,19 @@
 use std::cmp::max;
+use std::collections::HashSet;
+use std::iter::FromIterator;
 use std::sync::Arc;
 
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
 use crate::configuration::Config;
-use crate::events::{Notifier, SyncEvent};
+use crate::events::{SyncEvent, SyncEventsSender, UserNotificationsSender};
 use crate::simulation::Context;
 use crate::text::get_random_string;
 use async_channel::Sender;
 use futures::lock::Mutex;
 use matrix_sdk::locks::RwLock;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
+use rand::distributions::Alphanumeric;
 use rand::prelude::SliceRandom;
 use rand::Rng;
 
@@ -26,6 +29,7 @@ enum SocialAction {
     SendMessage,
     LogOut,
     UpdateStatus,
+    CreateChannel,
     None,
 }
 
@@ -35,7 +39,8 @@ pub enum State {
     Unregistered,
     LoggedIn,
     Sync {
-        rooms: Arc<RwLock<Vec<OwnedRoomId>>>, // available rooms that user can send messages
+        direct_messages: Arc<RwLock<Vec<OwnedRoomId>>>, // available rooms that user can send messages (personal/direct rooms)
+        channels: Arc<RwLock<HashSet<OwnedRoomId>>>, // available channels that user can send messages (he joined or created)
         events: Arc<Mutex<Vec<SyncEvent>>>, // recent events to be processed and react, for instance to respond to friends or join rooms
         cancel_sync: Sender<bool>,          // cancel sync task
         ticks_to_live: usize,               // ticks to live
@@ -44,7 +49,7 @@ pub enum State {
 }
 
 impl User {
-    pub async fn new(id_number: usize, notifier: Notifier, config: &Config) -> Self {
+    pub async fn new(id_number: usize, notifier: SyncEventsSender, config: &Config) -> Self {
         let localpart = get_user_id_localpart(id_number, &config.simulation.execution_id);
 
         let client = Client::new(notifier, config).await;
@@ -59,15 +64,24 @@ impl User {
         match &self.state {
             State::Unregistered => self.register().await,
             State::Unauthenticated => self.log_in().await,
-            State::LoggedIn => self.sync(&context.config).await,
+            State::LoggedIn => self.sync(&context.config, &context.user_notifier).await,
             State::Sync { .. } => self.socialize(context).await,
             State::LoggedOut => self.restart(&context.config).await,
         }
     }
 
     async fn add_room(&self, room_id: &RoomId) {
-        if let State::Sync { rooms, .. } = &self.state {
-            rooms.write().await.push(room_id.to_owned());
+        if let State::Sync {
+            direct_messages, ..
+        } = &self.state
+        {
+            direct_messages.write().await.push(room_id.to_owned());
+        }
+    }
+
+    async fn add_channel(&self, room_id: &RoomId) {
+        if let State::Sync { channels, .. } = &self.state {
+            channels.write().await.insert(room_id.to_owned());
         }
     }
 
@@ -112,15 +126,21 @@ impl User {
         self.client.user_id().await
     }
 
-    async fn sync(&mut self, config: &Config) {
+    async fn sync(&mut self, config: &Config, user_notifier: &UserNotificationsSender) {
         log::debug!("user '{}' act => {}", self.localpart, "SYNC");
-        match self.client.sync().await {
+        match self.client.sync(user_notifier).await {
             SyncResult::Ok {
-                joined_rooms,
+                direct_messages,
                 invited_rooms,
                 cancel_sync,
+                channels,
             } => {
-                log::debug!("user '{}' has {} rooms", self.localpart, joined_rooms.len());
+                log::debug!(
+                    "user '{}' has {} dm rooms",
+                    self.localpart,
+                    direct_messages.len()
+                );
+                log::debug!("user '{}' has {} channels", self.localpart, channels.len());
                 log::debug!(
                     "user '{}' has been invited to {} rooms",
                     self.localpart,
@@ -132,14 +152,17 @@ impl User {
                     events.push(SyncEvent::Invite(invited_room));
                 }
 
-                for joined_room in &joined_rooms {
-                    events.push(SyncEvent::UnreadRoom(joined_room.clone()));
+                for dm_room in &direct_messages {
+                    events.push(SyncEvent::UnreadRoom(dm_room.clone()));
                 }
+
+                let channels = HashSet::from_iter(channels.iter().cloned());
 
                 let ticks_to_live = get_ticks_to_live(config);
                 self.state = State::Sync {
-                    rooms: Arc::new(RwLock::new(joined_rooms)),
+                    direct_messages: Arc::new(RwLock::new(direct_messages)),
                     events: Arc::new(Mutex::new(events)),
+                    channels: Arc::new(RwLock::new(channels)),
                     cancel_sync,
                     ticks_to_live,
                 };
@@ -157,10 +180,10 @@ impl User {
         let new_events = self.client.read_sync_events().await;
         let mut events = events.lock().await;
         for event in new_events {
-            if let SyncEvent::RoomCreated(room_id) = event {
-                self.add_room(&room_id).await;
-            } else {
-                events.push(event);
+            match event {
+                SyncEvent::RoomCreated(room_id) => self.add_room(&room_id).await,
+                SyncEvent::ChannelCreated(room_id) => self.add_channel(&room_id).await,
+                _ => events.push(event),
             }
         }
     }
@@ -176,10 +199,11 @@ impl User {
 
         self.decrease_ticks_to_live();
         if let State::Sync {
-            rooms,
+            direct_messages,
             events,
             cancel_sync,
             ticks_to_live,
+            channels,
         } = &self.state
         {
             self.read_sync_events(events).await;
@@ -195,13 +219,24 @@ impl User {
                     // it's time to log out
                     self.log_out(cancel_sync.clone()).await;
                 } else {
-                    match pick_random_action(context.config.simulation.probability_to_act) {
+                    match pick_random_action(
+                        context.config.simulation.probability_to_act,
+                        context.config.simulation.channels_load,
+                    ) {
                         SocialAction::SendMessage => {
-                            self.send_message(pick_random_room(rooms).await).await
+                            self.send_message(pick_random_room(direct_messages).await)
+                                .await
                         }
                         SocialAction::AddFriend => self.add_friend(context).await,
                         SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
                         SocialAction::UpdateStatus => self.update_status().await,
+                        SocialAction::CreateChannel => {
+                            self.create_channel(
+                                channels.read().await.len(),
+                                context.config.simulation.channels_per_user,
+                            )
+                            .await
+                        }
                         SocialAction::None => log::debug!("user {} did nothing", self.localpart),
                     };
                 }
@@ -243,6 +278,31 @@ impl User {
             self.client.add_friend(&friend_id).await;
         } else {
             log::debug!("there are no users to add as friend :(");
+        }
+    }
+
+    async fn create_channel(&self, current_user_channels: usize, channels_per_user: usize) {
+        if current_user_channels < channels_per_user {
+            let channel_name: String = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(7)
+                .map(char::from)
+                .collect();
+            log::debug!(
+                "user '{}' act => {} => {}",
+                self.localpart,
+                "CREATE CHANNEL",
+                channel_name
+            );
+            self.client.create_channel(channel_name).await
+        } else {
+            log::debug!(
+                "user '{}' act => {} per user: {}, current user: {}",
+                self.localpart,
+                "REACH CHANNEL LIMIT CREATION",
+                channels_per_user,
+                current_user_channels
+            )
         }
     }
 
@@ -289,11 +349,13 @@ fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
 }
 
 // we probably want to distribute these actions and don't make them random (more send messages than logouts)
-fn pick_random_action(probability_to_act: usize) -> SocialAction {
+fn pick_random_action(probability_to_act: usize, channels_enabled: bool) -> SocialAction {
     let mut rng = rand::thread_rng();
     if rng.gen_ratio(probability_to_act as u32, 100) {
-        if rng.gen_ratio(1, 50) {
+        if rng.gen_ratio(1, 75) {
             SocialAction::LogOut
+        } else if rng.gen_ratio(1, 50) && channels_enabled {
+            SocialAction::CreateChannel
         } else if rng.gen_ratio(1, 25) {
             SocialAction::UpdateStatus
         } else if rng.gen_ratio(1, 3) {

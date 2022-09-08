@@ -9,6 +9,8 @@ max_users = 5000
 users_per_tick = 15
 grace_period_duration_in_secs = 30
 output = "output"
+channels_per_user = 5
+channels_load = true
 
 [requests]
 retry_enabled = true

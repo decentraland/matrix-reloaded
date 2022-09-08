@@ -80,6 +80,8 @@ pub struct Simulation {
     pub execution_id: String,
     pub probability_to_act: usize,
     pub probability_for_short_lifes: usize,
+    pub channels_load: bool,
+    pub channels_per_user: usize,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -116,6 +118,7 @@ impl Config {
                 "simulation.probability_for_short_lifes",
                 args.probability_for_short_lifes,
             )?
+            .set_default("simulation.channels_load", true)?
             .build()?;
 
         log::debug!("Config: {:#?}", config);
