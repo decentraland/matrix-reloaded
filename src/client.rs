@@ -371,7 +371,7 @@ impl Client {
                 now.elapsed(),
             )))
             .await
-            .expect("channel should not be close");
+            .expect("channel should not be closed");
 
         match response {
             Err(Api(Server(Known(RumaApiError::ClientApi(Error {

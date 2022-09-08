@@ -225,7 +225,7 @@ impl Simulation {
         mut notification_receiver: Receiver<UserNotifications>,
         context: Arc<Context>,
     ) {
-        log::debug!("Spawing collect user notification");
+        log::debug!("spawning collect user notification");
         while let Some(event) = notification_receiver.recv().await {
             match event {
                 UserNotifications::NewChannel(room_id) => {
