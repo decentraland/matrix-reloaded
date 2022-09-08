@@ -388,9 +388,50 @@ impl Client {
         }
     }
 
-    pub async fn join_room(&self, room_id: &RoomId) {
+    pub async fn join_room(&self, room_id: &RoomId, for_channel: bool) {
         let request = JoinRoomRequest::new(room_id);
         self.send_and_notify(request, UserRequest::JoinRoom).await;
+        if for_channel {
+            self.sync_channel
+                .0
+                .send(SyncEvent::GetChannelMembers(room_id.to_owned()))
+                .await
+                .expect("channel should not be closed")
+        }
+    }
+
+    pub async fn get_channel_members(&self, room_id: &RoomId) {
+        let client = &self.inner;
+        let now = Instant::now();
+
+        match client.get_room(room_id) {
+            Some(room) => {
+                let response = room.members().await;
+                match response {
+                    Ok(_) => {
+                        self.event_notifier
+                            .send(Event::RequestDuration((
+                                UserRequest::GetChannelMembers,
+                                now.elapsed(),
+                            )))
+                            .await
+                            .expect("channel should not be closed");
+                    }
+                    Err(e) => {
+                        log::debug!("get channel members failed! {}", e);
+                        if let Http(e) = e {
+                            self.event_notifier
+                                .send(Event::Error((UserRequest::GetChannelMembers, e)))
+                                .await
+                                .expect("channel should not be closed");
+                        }
+                    }
+                }
+            }
+            None => {
+                log::debug!("get_channel_members: room {} not found", room_id)
+            }
+        }
     }
 
     pub async fn update_status(&self) {
