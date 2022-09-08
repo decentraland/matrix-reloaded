@@ -1,6 +1,8 @@
 use crate::{
     configuration::{get_homeserver_url, Config},
-    events::{Event, SyncEventsSender, SyncEvent, UserNotifications, UserNotificationsSender, UserRequest},
+    events::{
+        Event, SyncEvent, SyncEventsSender, UserNotifications, UserNotificationsSender, UserRequest,
+    },
     text::get_random_string,
 };
 use async_channel::Sender;
@@ -245,27 +247,22 @@ impl Client {
         tokio::spawn(sync_until_cancel(client, check_cancel).await);
 
         let res = response.expect("already checked it is not an error");
-        let mut direct_messages = res.rooms.join.keys().cloned().collect::<Vec<_>>(); // here joined rooms but after cleaning up, it'll be just direct messages (private rooms)
         let invited_rooms = res.rooms.invite.keys().cloned().collect::<Vec<_>>();
-        let mut channels: Vec<OwnedRoomId> = Vec::new();
-        let mut indexes: Vec<usize> = Vec::new(); // collect indexes to remove from direct_messages
 
-        for (i, id) in direct_messages.iter().enumerate() {
-            match client.get_room(id) {
+        let mut direct_messages = Vec::new();
+        let mut channels: Vec<OwnedRoomId> = Vec::new();
+
+        for (id, _) in res.rooms.join {
+            match client.get_room(&id) {
                 Some(room) => {
                     if is_channel(&room) {
-                        channels.push(id.to_owned());
-                        indexes.push(i);
+                        channels.push(id);
+                    } else {
+                        direct_messages.push(id)
                     }
                 }
                 None => log::debug!("room not found in store {}", id),
             }
-        }
-
-        // remove public rooms from direct messages (private rooms)
-        for i in indexes {
-            log::debug!("removing {i} from joined rooms");
-            direct_messages.remove(i);
         }
 
         SyncResult::Ok {
@@ -522,7 +519,11 @@ async fn add_created_room_event_handler(
         .await;
 }
 
-async fn on_room_created(room: Room, user_notifier: UserNotificationsSender, tx: Sender<SyncEvent>) {
+async fn on_room_created(
+    room: Room,
+    user_notifier: UserNotificationsSender,
+    tx: Sender<SyncEvent>,
+) {
     if is_channel(&room) {
         let room_id = room.room_id();
         // Notify simulation about a new channel in order to add it to the in-world state
