@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
 use crate::configuration::Config;
-use crate::events::{SyncEventsSender, SyncEvent, UserNotificationsSender};
+use crate::events::{SyncEvent, SyncEventsSender, UserNotificationsSender};
 use crate::simulation::Context;
 use crate::text::get_random_string;
 use async_channel::Sender;
@@ -231,12 +231,11 @@ impl User {
                         SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
                         SocialAction::UpdateStatus => self.update_status().await,
                         SocialAction::CreateChannel => {
-                            if channels.read().await.len()
-                                < context.config.simulation.channels_per_user
-                                && context.config.simulation.channels_load
-                            {
-                                self.create_channel().await
-                            }
+                            self.create_channel(
+                                channels.read().await.len(),
+                                context.config.simulation.channels_per_user,
+                            )
+                            .await
                         }
                         SocialAction::None => log::debug!("user {} did nothing", self.localpart),
                     };
@@ -282,19 +281,29 @@ impl User {
         }
     }
 
-    async fn create_channel(&self) {
-        let channel_name: String = rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(7)
-            .map(char::from)
-            .collect();
-        log::debug!(
-            "user '{}' act => {} => {}",
-            self.localpart,
-            "CREATE CHANNEL",
-            channel_name
-        );
-        self.client.create_channel(channel_name).await
+    async fn create_channel(&self, current_user_channels: usize, channels_per_user: usize) {
+        if current_user_channels < channels_per_user {
+            let channel_name: String = rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(7)
+                .map(char::from)
+                .collect();
+            log::debug!(
+                "user '{}' act => {} => {}",
+                self.localpart,
+                "CREATE CHANNEL",
+                channel_name
+            );
+            self.client.create_channel(channel_name).await
+        } else {
+            log::debug!(
+                "user '{}' act => {} per user: {}, current user: {}",
+                self.localpart,
+                "REACH CHANNEL LIMIT CREATION",
+                channels_per_user,
+                current_user_channels
+            )
+        }
     }
 
     async fn join(&self, room: &RoomId) {
