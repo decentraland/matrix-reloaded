@@ -1,6 +1,6 @@
 use crate::{
     configuration::{get_homeserver_url, Config},
-    events::{Event, Notifier, SyncEvent, UserNotifications, UserNotifier, UserRequest},
+    events::{Event, SyncEventsSender, SyncEvent, UserNotifications, UserNotificationsSender, UserRequest},
     text::get_random_string,
 };
 use async_channel::Sender;
@@ -53,7 +53,7 @@ type SyncChannel = (
 #[derive(Clone, Debug)]
 pub struct Client {
     inner: matrix_sdk::Client,
-    event_notifier: Notifier,
+    event_notifier: SyncEventsSender,
     sync_channel: SyncChannel,
 }
 
@@ -81,7 +81,7 @@ pub enum SyncResult {
 const PASSWORD: &str = "asdfasdf";
 
 impl Client {
-    pub async fn new(notifier: Notifier, config: &Config) -> Self {
+    pub async fn new(notifier: SyncEventsSender, config: &Config) -> Self {
         let inner = Self::create(
             &config.server.homeserver,
             config.requests.retry_enabled,
@@ -212,7 +212,7 @@ impl Client {
     }
 
     /// Do initial sync and return rooms and new invites. Then register event handler for future syncs and notify events.
-    pub async fn sync(&self, user_notifier: &UserNotifier) -> SyncResult {
+    pub async fn sync(&self, user_notifier: &UserNotificationsSender) -> SyncResult {
         let client = &self.inner;
         let user_id = self.user_id().await.expect("user_id to be present");
         let now = Instant::now();
@@ -463,7 +463,7 @@ async fn add_room_message_event_handler(
     client: &matrix_sdk::Client,
     tx: &Sender<SyncEvent>,
     user_id: &UserId,
-    notifier: &Notifier,
+    notifier: &SyncEventsSender,
 ) {
     client
         .register_event_handler({
@@ -504,7 +504,7 @@ async fn add_invite_event_handler(
 
 async fn add_created_room_event_handler(
     client: &matrix_sdk::Client,
-    user_notifier: &UserNotifier,
+    user_notifier: &UserNotificationsSender,
     tx: &Sender<SyncEvent>,
 ) {
     client
@@ -522,7 +522,7 @@ async fn add_created_room_event_handler(
         .await;
 }
 
-async fn on_room_created(room: Room, user_notifier: UserNotifier, tx: Sender<SyncEvent>) {
+async fn on_room_created(room: Room, user_notifier: UserNotificationsSender, tx: Sender<SyncEvent>) {
     if is_channel(&room) {
         let room_id = room.room_id();
         // Notify simulation about a new channel in order to add it to the in-world state
@@ -561,7 +561,7 @@ async fn on_room_message(
     room: Room,
     sender: Sender<SyncEvent>,
     user_id: OwnedUserId,
-    notifier: &Notifier,
+    notifier: &SyncEventsSender,
 ) {
     if let Room::Joined(room) = room {
         if let MessageType::Text(text) = event.content.msgtype {

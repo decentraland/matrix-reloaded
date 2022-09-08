@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
 use crate::configuration::Config;
-use crate::events::{Notifier, SyncEvent, UserNotifier};
+use crate::events::{SyncEventsSender, SyncEvent, UserNotificationsSender};
 use crate::simulation::Context;
 use crate::text::get_random_string;
 use async_channel::Sender;
@@ -49,7 +49,7 @@ pub enum State {
 }
 
 impl User {
-    pub async fn new(id_number: usize, notifier: Notifier, config: &Config) -> Self {
+    pub async fn new(id_number: usize, notifier: SyncEventsSender, config: &Config) -> Self {
         let localpart = get_user_id_localpart(id_number, &config.simulation.execution_id);
 
         let client = Client::new(notifier, config).await;
@@ -126,7 +126,7 @@ impl User {
         self.client.user_id().await
     }
 
-    async fn sync(&mut self, config: &Config, user_notifier: &UserNotifier) {
+    async fn sync(&mut self, config: &Config, user_notifier: &UserNotificationsSender) {
         log::debug!("user '{}' act => {}", self.localpart, "SYNC");
         match self.client.sync(user_notifier).await {
             SyncResult::Ok {

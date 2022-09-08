@@ -11,8 +11,8 @@ use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 
-pub type Notifier = Sender<Event>;
-pub type UserNotifier = Sender<UserNotifications>;
+pub type SyncEventsSender = Sender<Event>;
+pub type UserNotificationsSender = Sender<UserNotifications>;
 
 #[derive(Serialize, Debug, Eq, Hash, PartialEq, Clone, Display)]
 #[serde(rename_all = "snake_case")]
