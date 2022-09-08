@@ -39,7 +39,7 @@ pub enum State {
     Unregistered,
     LoggedIn,
     Sync {
-        rooms: Arc<RwLock<Vec<OwnedRoomId>>>, // available rooms that user can send messages (personal/direct rooms)
+        direct_messages: Arc<RwLock<Vec<OwnedRoomId>>>, // available rooms that user can send messages (personal/direct rooms)
         channels: Arc<RwLock<HashSet<OwnedRoomId>>>, // available channels that user can send messages (he joined or created)
         events: Arc<Mutex<Vec<SyncEvent>>>, // recent events to be processed and react, for instance to respond to friends or join rooms
         cancel_sync: Sender<bool>,          // cancel sync task
@@ -71,8 +71,8 @@ impl User {
     }
 
     async fn add_room(&self, room_id: &RoomId) {
-        if let State::Sync { rooms, .. } = &self.state {
-            rooms.write().await.push(room_id.to_owned());
+        if let State::Sync { direct_messages, .. } = &self.state {
+            direct_messages.write().await.push(room_id.to_owned());
         }
     }
 
@@ -127,12 +127,12 @@ impl User {
         log::debug!("user '{}' act => {}", self.localpart, "SYNC");
         match self.client.sync(user_notifier).await {
             SyncResult::Ok {
-                joined_rooms,
+                direct_messages,
                 invited_rooms,
                 cancel_sync,
                 channels,
             } => {
-                log::debug!("user '{}' has {} rooms", self.localpart, joined_rooms.len());
+                log::debug!("user '{}' has {} rooms", self.localpart, direct_messages.len());
                 log::debug!("user '{}' has {} channels", self.localpart, channels.len());
                 log::debug!(
                     "user '{}' has been invited to {} rooms",
@@ -145,15 +145,15 @@ impl User {
                     events.push(SyncEvent::Invite(invited_room));
                 }
 
-                for joined_room in &joined_rooms {
-                    events.push(SyncEvent::UnreadRoom(joined_room.clone()));
+                for dm_room in &direct_messages {
+                    events.push(SyncEvent::UnreadRoom(dm_room.clone()));
                 }
 
                 let channels = HashSet::from_iter(channels.iter().cloned());
 
                 let ticks_to_live = get_ticks_to_live(config);
                 self.state = State::Sync {
-                    rooms: Arc::new(RwLock::new(joined_rooms)),
+                    direct_messages: Arc::new(RwLock::new(direct_messages)),
                     events: Arc::new(Mutex::new(events)),
                     channels: Arc::new(RwLock::new(channels)),
                     cancel_sync,
@@ -192,7 +192,7 @@ impl User {
 
         self.decrease_ticks_to_live();
         if let State::Sync {
-            rooms,
+            direct_messages,
             events,
             cancel_sync,
             ticks_to_live,
@@ -217,7 +217,7 @@ impl User {
                         context.config.simulation.channels_load,
                     ) {
                         SocialAction::SendMessage => {
-                            self.send_message(pick_random_room(rooms).await).await
+                            self.send_message(pick_random_room(direct_messages).await).await
                         }
                         SocialAction::AddFriend => self.add_friend(context).await,
                         SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,

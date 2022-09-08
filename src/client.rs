@@ -70,7 +70,7 @@ pub enum RegisterResult {
 
 pub enum SyncResult {
     Ok {
-        joined_rooms: Vec<OwnedRoomId>,
+        direct_messages: Vec<OwnedRoomId>,
         invited_rooms: Vec<OwnedRoomId>,
         channels: Vec<OwnedRoomId>, // channels where user has joined
         cancel_sync: Sender<bool>,
@@ -245,16 +245,15 @@ impl Client {
         tokio::spawn(sync_until_cancel(client, check_cancel).await);
 
         let res = response.expect("already checked it is not an error");
-        let mut joined_rooms = res.rooms.join.keys().cloned().collect::<Vec<_>>();
+        let mut direct_messages = res.rooms.join.keys().cloned().collect::<Vec<_>>(); // here joined rooms but after cleaning up, it'll be just direct messages (private rooms)
         let invited_rooms = res.rooms.invite.keys().cloned().collect::<Vec<_>>();
         let mut channels: Vec<OwnedRoomId> = Vec::new();
-        let mut indexes: Vec<usize> = Vec::new(); // collect indexes to remove from joined_rooms
+        let mut indexes: Vec<usize> = Vec::new(); // collect indexes to remove from direct_messages
 
-        for (i, id) in joined_rooms.iter().enumerate() {
+        for (i, id) in direct_messages.iter().enumerate() {
             match client.get_room(id) {
                 Some(room) => {
                     if !room.is_direct() && room.is_public() {
-                        log::debug!("joined room {} is public", id);
                         channels.push(id.to_owned());
                         indexes.push(i);
                     }
@@ -263,14 +262,14 @@ impl Client {
             }
         }
 
-        // remove public rooms from joined room
+        // remove public rooms from direct messages (private rooms)
         for i in indexes {
             log::debug!("removing {i} from joined rooms");
-            joined_rooms.remove(i);
+            direct_messages.remove(i);
         }
 
         SyncResult::Ok {
-            joined_rooms,
+            direct_messages,
             invited_rooms,
             cancel_sync,
             channels,
