@@ -250,7 +250,7 @@ impl Client {
         let invited_rooms = res.rooms.invite.keys().cloned().collect::<Vec<_>>();
 
         let mut direct_messages = Vec::new();
-        let mut channels: Vec<OwnedRoomId> = Vec::new();
+        let mut channels = Vec::new();
 
         for (id, _) in res.rooms.join {
             match client.get_room(&id) {
