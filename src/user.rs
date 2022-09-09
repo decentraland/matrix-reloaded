@@ -262,7 +262,7 @@ impl User {
     async fn react(&self, event: SyncEvent) {
         log::debug!("user '{}' act => {}", self.localpart, "REACT");
         match event {
-            SyncEvent::Invite(room_id) => self.join(&room_id, false).await,
+            SyncEvent::Invite(room_id) => self.join(&room_id, MessageType::Direct).await,
             SyncEvent::MessageReceived(room_id, _) => self.respond(room_id).await,
             SyncEvent::UnreadRoom(room_id) => self.read_messages(room_id).await,
             SyncEvent::GetChannelMembers(room_id) => self.get_channel_members(room_id).await,
@@ -342,7 +342,7 @@ impl User {
             loop {
                 let channel = exclude_user_channels.choose(&mut rng);
                 if let Some(room_id) = channel {
-                    self.join(room_id, true).await;
+                    self.join(room_id, MessageType::Channel).await;
                     log::debug!(
                         "user '{}' act => {} {}",
                         self.localpart,
