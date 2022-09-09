@@ -415,9 +415,9 @@ fn pick_random_action(probability_to_act: usize, channels_enabled: bool) -> Soci
     if rng.gen_ratio(probability_to_act as u32, 100) {
         if rng.gen_ratio(1, 75) {
             SocialAction::LogOut
-        } else if rng.gen_ratio(1, 50) && channels_enabled {
+        } else if channels_enabled && rng.gen_ratio(1, 50) {
             SocialAction::CreateChannel
-        } else if rng.gen_ratio(1, 35) && channels_enabled {
+        } else if channels_enabled && rng.gen_ratio(1, 35) {
             SocialAction::JoinChannel
         } else if rng.gen_ratio(1, 25) {
             SocialAction::UpdateStatus
