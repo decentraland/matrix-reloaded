@@ -39,7 +39,7 @@ pub struct Context {
     pub config: Arc<Config>,
     notifier: Sender<Event>,
     pub user_notifier: Sender<UserNotifications>,
-    pub channels: Arc<RwLock<HashSet<OwnedRoomId>>>, // public channels created by all users
+    pub channels: RwLock<HashSet<OwnedRoomId>>, // public channels created by all users
 }
 
 impl Entity {
@@ -117,7 +117,7 @@ impl Simulation {
             config: self.config.clone(),
             notifier: tx.clone(),
             user_notifier: user_notification_sender.clone(),
-            channels: Arc::new(RwLock::new(HashSet::new())),
+            channels: RwLock::new(HashSet::new()),
         });
 
         tokio::spawn(Simulation::collect_user_notifications(

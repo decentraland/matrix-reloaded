@@ -82,6 +82,7 @@ pub struct Simulation {
     pub probability_for_short_lifes: usize,
     pub channels_load: bool,
     pub channels_per_user: usize,
+    pub allow_get_channel_members: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -119,6 +120,7 @@ impl Config {
                 args.probability_for_short_lifes,
             )?
             .set_default("simulation.channels_load", true)?
+            .set_default("simulation.allow_get_channel_members", false)?
             .build()?;
 
         log::debug!("Config: {:#?}", config);

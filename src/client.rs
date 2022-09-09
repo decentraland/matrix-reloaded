@@ -4,6 +4,7 @@ use crate::{
         Event, SyncEvent, SyncEventsSender, UserNotifications, UserNotificationsSender, UserRequest,
     },
     text::get_random_string,
+    user::MessageType,
 };
 use async_channel::Sender;
 use futures::Future;
@@ -28,7 +29,10 @@ use matrix_sdk::ruma::{
         room::{
             create::OriginalSyncRoomCreateEvent,
             member::StrippedRoomMemberEvent,
-            message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent},
+            message::{
+                MessageType as MatrixMessageType, OriginalSyncRoomMessageEvent,
+                RoomMessageEventContent,
+            },
         },
         AnyMessageLikeEventContent,
     },
@@ -388,9 +392,57 @@ impl Client {
         }
     }
 
-    pub async fn join_room(&self, room_id: &RoomId) {
+    pub async fn join_room(
+        &self,
+        room_id: &RoomId,
+        room_type: MessageType,
+        allow_get_channel_members: bool,
+    ) {
         let request = JoinRoomRequest::new(room_id);
         self.send_and_notify(request, UserRequest::JoinRoom).await;
+        if allow_get_channel_members {
+            if let MessageType::Channel = room_type {
+                self.sync_channel
+                    .0
+                    .send(SyncEvent::GetChannelMembers(room_id.to_owned()))
+                    .await
+                    .expect("channel should not be closed")
+            }
+        }
+    }
+
+    pub async fn get_channel_members(&self, room_id: &RoomId) {
+        let client = &self.inner;
+        let now = Instant::now();
+
+        match client.get_room(room_id) {
+            Some(room) => {
+                let response = room.members().await;
+                match response {
+                    Ok(_) => {
+                        self.event_notifier
+                            .send(Event::RequestDuration((
+                                UserRequest::GetChannelMembers,
+                                now.elapsed(),
+                            )))
+                            .await
+                            .expect("channel should not be closed");
+                    }
+                    Err(e) => {
+                        log::debug!("get channel members failed! {}", e);
+                        if let Http(e) = e {
+                            self.event_notifier
+                                .send(Event::Error((UserRequest::GetChannelMembers, e)))
+                                .await
+                                .expect("channel should not be closed");
+                        }
+                    }
+                }
+            }
+            None => {
+                log::debug!("get_channel_members: room {} not found", room_id)
+            }
+        }
     }
 
     pub async fn update_status(&self) {
@@ -565,7 +617,7 @@ async fn on_room_message(
     notifier: &SyncEventsSender,
 ) {
     if let Room::Joined(room) = room {
-        if let MessageType::Text(text) = event.content.msgtype {
+        if let MatrixMessageType::Text(text) = event.content.msgtype {
             if event.sender.localpart() == user_id.localpart() {
                 return;
             }
