@@ -25,6 +25,11 @@ pub struct User {
     pub state: State,
 }
 
+pub enum MessageType {
+    Direct,
+    Channel,
+}
+
 enum SocialAction {
     AddFriend,
     SendMessage,
@@ -350,13 +355,14 @@ impl User {
         }
     }
 
-    async fn join(&self, room: &RoomId, for_channel: bool) {
-        if for_channel {
-            log::debug!("user '{}' act => {}", self.localpart, "JOIN CHANNEL");
-        } else {
-            log::debug!("user '{}' act => {}", self.localpart, "JOIN ROOM");
+    async fn join(&self, room: &RoomId, room_type: MessageType) {
+        match room_type {
+            MessageType::Direct => log::debug!("user '{}' act => {}", self.localpart, "JOIN ROOM"),
+            MessageType::Channel => {
+                log::debug!("user '{}' act => {}", self.localpart, "JOIN CHANNEL")
+            }
         }
-        self.client.join_room(room, for_channel).await;
+        self.client.join_room(room, room_type).await;
     }
 
     async fn send_message(&self, room: Option<OwnedRoomId>) {

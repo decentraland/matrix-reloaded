@@ -4,6 +4,7 @@ use crate::{
         Event, SyncEvent, SyncEventsSender, UserNotifications, UserNotificationsSender, UserRequest,
     },
     text::get_random_string,
+    user::MessageType,
 };
 use async_channel::Sender;
 use futures::Future;
@@ -28,7 +29,7 @@ use matrix_sdk::ruma::{
         room::{
             create::OriginalSyncRoomCreateEvent,
             member::StrippedRoomMemberEvent,
-            message::{MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent},
+            message::{OriginalSyncRoomMessageEvent, RoomMessageEventContent},
         },
         AnyMessageLikeEventContent,
     },
@@ -388,10 +389,10 @@ impl Client {
         }
     }
 
-    pub async fn join_room(&self, room_id: &RoomId, for_channel: bool) {
+    pub async fn join_room(&self, room_id: &RoomId, room_type: MessageType) {
         let request = JoinRoomRequest::new(room_id);
         self.send_and_notify(request, UserRequest::JoinRoom).await;
-        if for_channel {
+        if let MessageType::Channel = room_type {
             self.sync_channel
                 .0
                 .send(SyncEvent::GetChannelMembers(room_id.to_owned()))
