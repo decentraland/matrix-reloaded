@@ -25,6 +25,7 @@ pub struct User {
     pub state: State,
 }
 
+#[derive(Clone, Debug)]
 pub enum MessageType {
     Direct,
     Channel,
@@ -32,7 +33,7 @@ pub enum MessageType {
 
 enum SocialAction {
     AddFriend,
-    SendMessage,
+    SendMessage(MessageType),
     LogOut,
     UpdateStatus,
     CreateChannel,
@@ -230,10 +231,22 @@ impl User {
                         context.config.simulation.probability_to_act,
                         context.config.simulation.channels_load,
                     ) {
-                        SocialAction::SendMessage => {
-                            self.send_message(pick_random_room(direct_messages).await)
+                        SocialAction::SendMessage(message_type) => match message_type {
+                            MessageType::Direct => {
+                                self.send_message(
+                                    pick_random_room(direct_messages).await,
+                                    message_type,
+                                )
                                 .await
-                        }
+                            }
+                            MessageType::Channel => {
+                                self.send_message(
+                                    pick_randoom_channels(channels).await,
+                                    message_type,
+                                )
+                                .await
+                            }
+                        },
                         SocialAction::AddFriend => self.add_friend(context).await,
                         SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
                         SocialAction::UpdateStatus => self.update_status().await,
@@ -263,7 +276,9 @@ impl User {
         log::debug!("user '{}' act => {}", self.localpart, "REACT");
         match event {
             SyncEvent::Invite(room_id) => self.join(&room_id, MessageType::Direct, false).await,
-            SyncEvent::MessageReceived(room_id, _) => self.respond(room_id).await,
+            SyncEvent::MessageReceived(room_id, _, message_type) => {
+                self.respond(room_id, message_type).await
+            }
             SyncEvent::UnreadRoom(room_id) => self.read_messages(room_id).await,
             SyncEvent::GetChannelMembers(room_id) => self.get_channel_members(room_id).await,
             _ => {}
@@ -280,9 +295,18 @@ impl User {
         self.client.get_channel_members(&room_id).await
     }
 
-    async fn respond(&self, room: OwnedRoomId) {
-        log::debug!("user '{}' act => {}", self.localpart, "RESPOND");
-        self.send_message(Some(room)).await;
+    async fn respond(&self, room: OwnedRoomId, message_type: MessageType) {
+        match message_type {
+            MessageType::Direct => log::debug!(
+                "user '{}' act => {}",
+                self.localpart,
+                "RESPOND DIRECT MESSAGE"
+            ),
+            MessageType::Channel => {
+                log::debug!("user '{}' act => {}", self.localpart, "RESPOND CHANNEL")
+            }
+        }
+        self.send_message(Some(room), message_type).await;
     }
 
     async fn add_friend(&self, context: &Context) {
@@ -372,8 +396,17 @@ impl User {
             .await;
     }
 
-    async fn send_message(&self, room: Option<OwnedRoomId>) {
-        log::debug!("user '{}' act => {}", self.localpart, "SEND MESSAGE");
+    async fn send_message(&self, room: Option<OwnedRoomId>, message_type: MessageType) {
+        match message_type {
+            MessageType::Direct => {
+                log::debug!("user '{}' act => {}", self.localpart, "SEND DIRECT MESSAGE")
+            }
+            MessageType::Channel => log::debug!(
+                "user '{}' act => {}",
+                self.localpart,
+                "SEND CHANNEL MESSAGE"
+            ),
+        }
         if let Some(room) = room {
             self.client.send_message(&room, get_random_string()).await;
         } else {
@@ -421,10 +454,16 @@ fn pick_random_action(probability_to_act: usize, channels_enabled: bool) -> Soci
             SocialAction::JoinChannel
         } else if rng.gen_ratio(1, 25) {
             SocialAction::UpdateStatus
-        } else if rng.gen_ratio(1, 3) {
+        } else if rng.gen_ratio(1, 10) {
             SocialAction::AddFriend
+        } else if channels_enabled {
+            if rng.gen_ratio(1, 5) {
+                SocialAction::SendMessage(MessageType::Channel)
+            } else {
+                SocialAction::SendMessage(MessageType::Direct)
+            }
         } else {
-            SocialAction::SendMessage
+            SocialAction::SendMessage(MessageType::Direct)
         }
     } else {
         SocialAction::None
@@ -437,6 +476,19 @@ async fn pick_random_room(rooms: &RwLock<Vec<OwnedRoomId>>) -> Option<OwnedRoomI
         .await
         .choose(&mut rand::thread_rng())
         .map(|room| room.to_owned())
+}
+
+async fn pick_randoom_channels(channels: &RwLock<HashSet<OwnedRoomId>>) -> Option<OwnedRoomId> {
+    let channels = channels.read().await;
+    if !channels.is_empty() {
+        let channels_vec = channels.iter().collect::<Vec<_>>();
+        let channel_id = channels_vec
+            .choose(&mut rand::thread_rng())
+            .map(|room| room.to_owned().to_owned());
+        channel_id
+    } else {
+        None
+    }
 }
 
 /// Get random value for ticks to live related to the total of ticks in simulation,

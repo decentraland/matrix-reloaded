@@ -616,7 +616,7 @@ async fn on_room_message(
     user_id: OwnedUserId,
     notifier: &SyncEventsSender,
 ) {
-    if let Room::Joined(room) = room {
+    if let Room::Joined(joined_room) = &room {
         if let MatrixMessageType::Text(text) = event.content.msgtype {
             if event.sender.localpart() == user_id.localpart() {
                 return;
@@ -627,10 +627,17 @@ async fn on_room_message(
                 user_id
             );
 
+            let message_type = if is_channel(&room) {
+                MessageType::Channel
+            } else {
+                MessageType::Direct
+            };
+
             sender
                 .send(SyncEvent::MessageReceived(
-                    room.room_id().to_owned(),
+                    joined_room.room_id().to_owned(),
                     text.body,
+                    message_type,
                 ))
                 .await
                 .expect("channel open");
