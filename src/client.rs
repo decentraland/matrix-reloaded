@@ -29,7 +29,10 @@ use matrix_sdk::ruma::{
         room::{
             create::OriginalSyncRoomCreateEvent,
             member::StrippedRoomMemberEvent,
-            message::{OriginalSyncRoomMessageEvent, RoomMessageEventContent},
+            message::{
+                MessageType as MatrixMessageType, OriginalSyncRoomMessageEvent,
+                RoomMessageEventContent,
+            },
         },
         AnyMessageLikeEventContent,
     },
@@ -607,7 +610,7 @@ async fn on_room_message(
     notifier: &SyncEventsSender,
 ) {
     if let Room::Joined(room) = room {
-        if let MessageType::Text(text) = event.content.msgtype {
+        if let MatrixMessageType::Text(text) = event.content.msgtype {
             if event.sender.localpart() == user_id.localpart() {
                 return;
             }
