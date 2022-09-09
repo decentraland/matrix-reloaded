@@ -120,7 +120,7 @@ impl Config {
                 args.probability_for_short_lifes,
             )?
             .set_default("simulation.channels_load", true)?
-            .set_default("simulation.get_channel_members", false)?
+            .set_default("simulation.allow_get_channel_members", false)?
             .build()?;
 
         log::debug!("Config: {:#?}", config);

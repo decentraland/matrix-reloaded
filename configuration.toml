@@ -11,6 +11,7 @@ grace_period_duration_in_secs = 30
 output = "output"
 channels_per_user = 5
 channels_load = true
+allow_get_channel_members = false
 
 [requests]
 retry_enabled = true
