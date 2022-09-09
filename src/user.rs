@@ -454,7 +454,7 @@ fn pick_random_action(probability_to_act: usize, channels_enabled: bool) -> Soci
             SocialAction::JoinChannel
         } else if rng.gen_ratio(1, 25) {
             SocialAction::UpdateStatus
-        } else if rng.gen_ratio(1, 3) {
+        } else if rng.gen_ratio(1, 10) {
             SocialAction::AddFriend
         } else if channels_enabled && rng.gen_ratio(1, 5) {
             SocialAction::SendMessage(MessageType::Channel)
