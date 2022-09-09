@@ -262,7 +262,7 @@ impl User {
     async fn react(&self, event: SyncEvent) {
         log::debug!("user '{}' act => {}", self.localpart, "REACT");
         match event {
-            SyncEvent::Invite(room_id) => self.join(&room_id, MessageType::Direct).await,
+            SyncEvent::Invite(room_id) => self.join(&room_id, MessageType::Direct, false).await,
             SyncEvent::MessageReceived(room_id, _) => self.respond(room_id).await,
             SyncEvent::UnreadRoom(room_id) => self.read_messages(room_id).await,
             SyncEvent::GetChannelMembers(room_id) => self.get_channel_members(room_id).await,
@@ -342,7 +342,12 @@ impl User {
             loop {
                 let channel = exclude_user_channels.choose(&mut rng);
                 if let Some(room_id) = channel {
-                    self.join(room_id, MessageType::Channel).await;
+                    self.join(
+                        room_id,
+                        MessageType::Channel,
+                        context.config.simulation.allow_get_channel_members,
+                    )
+                    .await;
                     log::debug!(
                         "user '{}' act => {} {}",
                         self.localpart,
@@ -355,14 +360,16 @@ impl User {
         }
     }
 
-    async fn join(&self, room: &RoomId, room_type: MessageType) {
+    async fn join(&self, room: &RoomId, room_type: MessageType, allow_get_channel_members: bool) {
         match room_type {
             MessageType::Direct => log::debug!("user '{}' act => {}", self.localpart, "JOIN ROOM"),
             MessageType::Channel => {
                 log::debug!("user '{}' act => {}", self.localpart, "JOIN CHANNEL")
             }
         }
-        self.client.join_room(room, room_type).await;
+        self.client
+            .join_room(room, room_type, allow_get_channel_members)
+            .await;
     }
 
     async fn send_message(&self, room: Option<OwnedRoomId>) {

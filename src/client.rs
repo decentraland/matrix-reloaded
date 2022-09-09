@@ -392,15 +392,22 @@ impl Client {
         }
     }
 
-    pub async fn join_room(&self, room_id: &RoomId, room_type: MessageType) {
+    pub async fn join_room(
+        &self,
+        room_id: &RoomId,
+        room_type: MessageType,
+        allow_get_channel_members: bool,
+    ) {
         let request = JoinRoomRequest::new(room_id);
         self.send_and_notify(request, UserRequest::JoinRoom).await;
-        if let MessageType::Channel = room_type {
-            self.sync_channel
-                .0
-                .send(SyncEvent::GetChannelMembers(room_id.to_owned()))
-                .await
-                .expect("channel should not be closed")
+        if allow_get_channel_members {
+            if let MessageType::Channel = room_type {
+                self.sync_channel
+                    .0
+                    .send(SyncEvent::GetChannelMembers(room_id.to_owned()))
+                    .await
+                    .expect("channel should not be closed")
+            }
         }
     }
 
