@@ -302,7 +302,7 @@ impl User {
         let action = if social_action {
             "GET CHANNEL MEMBERS BY USER ACTION"
         } else {
-            "GET CHANNEL MEMBERS FORCED"
+            "GET CHANNEL MEMBERS BY JOINING"
         };
         log::debug!("user '{}' act => {}", self.localpart, action);
         self.client.get_channel_members(&room_id).await
