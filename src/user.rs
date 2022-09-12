@@ -241,7 +241,7 @@ impl User {
                             }
                             MessageType::Channel => {
                                 self.send_message(
-                                    pick_randoom_channels(channels).await,
+                                    pick_random_channels(channels).await,
                                     message_type,
                                 )
                                 .await
@@ -478,7 +478,7 @@ async fn pick_random_room(rooms: &RwLock<Vec<OwnedRoomId>>) -> Option<OwnedRoomI
         .map(|room| room.to_owned())
 }
 
-async fn pick_randoom_channels(channels: &RwLock<HashSet<OwnedRoomId>>) -> Option<OwnedRoomId> {
+async fn pick_random_channels(channels: &RwLock<HashSet<OwnedRoomId>>) -> Option<OwnedRoomId> {
     let channels = channels.read().await;
     if !channels.is_empty() {
         let channels_vec = channels.iter().collect::<Vec<_>>();
