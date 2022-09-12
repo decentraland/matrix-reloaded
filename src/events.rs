@@ -27,6 +27,7 @@ pub enum UserRequest {
     UpdateStatus,
     Messages,
     CreateChannel,
+    GetChannelMembers,
 }
 
 #[derive(Debug)]
@@ -50,6 +51,7 @@ pub enum SyncEvent {
     UnreadRoom(OwnedRoomId),
     MessageReceived(OwnedRoomId, String),
     ChannelCreated(OwnedRoomId),
+    GetChannelMembers(OwnedRoomId),
 }
 
 #[derive(Default)]

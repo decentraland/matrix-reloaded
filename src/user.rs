@@ -15,6 +15,7 @@ use matrix_sdk::locks::RwLock;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
 use rand::distributions::Alphanumeric;
 use rand::prelude::SliceRandom;
+use rand::rngs::StdRng;
 use rand::Rng;
 
 #[derive(Clone, Debug)]
@@ -24,12 +25,18 @@ pub struct User {
     pub state: State,
 }
 
+pub enum MessageType {
+    Direct,
+    Channel,
+}
+
 enum SocialAction {
     AddFriend,
     SendMessage,
     LogOut,
     UpdateStatus,
     CreateChannel,
+    JoinChannel,
     None,
 }
 
@@ -237,6 +244,7 @@ impl User {
                             )
                             .await
                         }
+                        SocialAction::JoinChannel => self.join_channel(context).await,
                         SocialAction::None => log::debug!("user {} did nothing", self.localpart),
                     };
                 }
@@ -254,9 +262,10 @@ impl User {
     async fn react(&self, event: SyncEvent) {
         log::debug!("user '{}' act => {}", self.localpart, "REACT");
         match event {
-            SyncEvent::Invite(room_id) => self.join(&room_id).await,
+            SyncEvent::Invite(room_id) => self.join(&room_id, MessageType::Direct, false).await,
             SyncEvent::MessageReceived(room_id, _) => self.respond(room_id).await,
             SyncEvent::UnreadRoom(room_id) => self.read_messages(room_id).await,
+            SyncEvent::GetChannelMembers(room_id) => self.get_channel_members(room_id).await,
             _ => {}
         }
     }
@@ -264,6 +273,11 @@ impl User {
     async fn read_messages(&self, room_id: OwnedRoomId) {
         log::debug!("user '{}' act => {}", self.localpart, "READ MESSAGES");
         self.client.read_messages(room_id).await;
+    }
+
+    async fn get_channel_members(&self, room_id: OwnedRoomId) {
+        log::debug!("user '{}' act => {}", self.localpart, "GET CHANNEL MEMBERS");
+        self.client.get_channel_members(&room_id).await
     }
 
     async fn respond(&self, room: OwnedRoomId) {
@@ -306,9 +320,56 @@ impl User {
         }
     }
 
-    async fn join(&self, room: &RoomId) {
-        log::debug!("user '{}' act => {}", self.localpart, "JOIN ROOM");
-        self.client.join_room(room).await;
+    async fn join_channel(&self, context: &Context) {
+        log::debug!("user '{}' act => {}", self.localpart, "JOIN CHANNEL");
+        let user_channels = match &self.state {
+            State::Sync { channels, .. } => channels,
+            _ => {
+                log::debug!("user '{}' was not synced", self.localpart);
+                return;
+            }
+        };
+        let ctx_channels = context.channels.read().await;
+        let user_channels = user_channels.read().await;
+        let exclude_user_channels = ctx_channels.difference(&user_channels).collect::<Vec<_>>();
+        if !exclude_user_channels.is_empty()
+            && user_channels.len() < context.config.simulation.channels_per_user
+        {
+            // we use this type of Random because it can be used in threads
+            // check out: https://docs.rs/rand/0.5.0/rand/rngs/struct.StdRng.html
+            // or https://stackoverflow.com/questions/65053037/how-can-i-clone-a-random-number-generator-for-different-threads-in-rust
+            let mut rng: StdRng = rand::SeedableRng::from_entropy();
+            loop {
+                let channel = exclude_user_channels.choose(&mut rng);
+                if let Some(room_id) = channel {
+                    self.join(
+                        room_id,
+                        MessageType::Channel,
+                        context.config.simulation.allow_get_channel_members,
+                    )
+                    .await;
+                    log::debug!(
+                        "user '{}' act => {} {}",
+                        self.localpart,
+                        "JOINED CHANNEL",
+                        room_id
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    async fn join(&self, room: &RoomId, room_type: MessageType, allow_get_channel_members: bool) {
+        match room_type {
+            MessageType::Direct => log::debug!("user '{}' act => {}", self.localpart, "JOIN ROOM"),
+            MessageType::Channel => {
+                log::debug!("user '{}' act => {}", self.localpart, "JOIN CHANNEL")
+            }
+        }
+        self.client
+            .join_room(room, room_type, allow_get_channel_members)
+            .await;
     }
 
     async fn send_message(&self, room: Option<OwnedRoomId>) {
@@ -354,8 +415,10 @@ fn pick_random_action(probability_to_act: usize, channels_enabled: bool) -> Soci
     if rng.gen_ratio(probability_to_act as u32, 100) {
         if rng.gen_ratio(1, 75) {
             SocialAction::LogOut
-        } else if rng.gen_ratio(1, 50) && channels_enabled {
+        } else if channels_enabled && rng.gen_ratio(1, 50) {
             SocialAction::CreateChannel
+        } else if channels_enabled && rng.gen_ratio(1, 35) {
+            SocialAction::JoinChannel
         } else if rng.gen_ratio(1, 25) {
             SocialAction::UpdateStatus
         } else if rng.gen_ratio(1, 3) {
