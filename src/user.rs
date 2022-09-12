@@ -261,7 +261,7 @@ impl User {
                         }
                         SocialAction::JoinChannel => self.join_channel(context).await,
                         SocialAction::GetChannelMembers => {
-                            let channel_id = pick_randoom_channels(channels).await;
+                            let channel_id = pick_random_channels(channels).await;
                             if let Some(channel_id) = channel_id {
                                 self.get_channel_members(channel_id).await;
                             }
