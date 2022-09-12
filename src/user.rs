@@ -454,14 +454,10 @@ fn pick_random_action(probability_to_act: usize, channels_enabled: bool) -> Soci
             SocialAction::JoinChannel
         } else if rng.gen_ratio(1, 25) {
             SocialAction::UpdateStatus
-        } else if rng.gen_ratio(1, 10) {
+        } else if rng.gen_ratio(1, 3) {
             SocialAction::AddFriend
-        } else if channels_enabled {
-            if rng.gen_ratio(1, 5) {
-                SocialAction::SendMessage(MessageType::Channel)
-            } else {
-                SocialAction::SendMessage(MessageType::Direct)
-            }
+        } else if channels_enabled && rng.gen_ratio(1, 5) {
+            SocialAction::SendMessage(MessageType::Channel)
         } else {
             SocialAction::SendMessage(MessageType::Direct)
         }
@@ -480,15 +476,10 @@ async fn pick_random_room(rooms: &RwLock<Vec<OwnedRoomId>>) -> Option<OwnedRoomI
 
 async fn pick_random_channels(channels: &RwLock<HashSet<OwnedRoomId>>) -> Option<OwnedRoomId> {
     let channels = channels.read().await;
-    if !channels.is_empty() {
-        let channels_vec = channels.iter().collect::<Vec<_>>();
-        let channel_id = channels_vec
-            .choose(&mut rand::thread_rng())
-            .map(|room| room.to_owned().to_owned());
-        channel_id
-    } else {
-        None
-    }
+    let channels_vec = channels.iter().collect::<Vec<_>>();
+    channels_vec
+        .choose(&mut rand::thread_rng())
+        .map(|room| room.to_owned().to_owned())
 }
 
 /// Get random value for ticks to live related to the total of ticks in simulation,
