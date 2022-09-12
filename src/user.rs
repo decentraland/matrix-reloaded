@@ -446,6 +446,10 @@ impl User {
     fn pick_friend(&self, context: &Context) -> Option<OwnedUserId> {
         let mut rng = rand::thread_rng();
         loop {
+            log::debug!(
+                "pick_friend: syncing users length {}",
+                context.syncing_users.len()
+            );
             let friend_id = context.syncing_users.choose(&mut rng)?;
             if friend_id.localpart() != self.localpart {
                 return Some(friend_id.clone());
