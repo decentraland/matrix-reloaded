@@ -16,13 +16,14 @@ use matrix_sdk::ruma::OwnedRoomId;
 use matrix_sdk::ruma::OwnedUserId;
 use rand::prelude::IteratorRandom;
 use std::collections::HashSet;
+use std::time::Duration;
 use std::{collections::BTreeMap, ops::Sub, sync::Arc, time::Instant};
+use tokio::time::timeout;
 use tokio::{
     sync::mpsc::{self, Receiver, Sender},
     task::JoinHandle,
     time::sleep,
 };
-use tokio_context::task::TaskController;
 
 enum Entity {
     Waiting { id: usize },
@@ -31,7 +32,7 @@ enum Entity {
 
 enum EntityAction {
     WakeUp(User),
-    Act(JoinHandle<Option<()>>),
+    Act(JoinHandle<()>),
 }
 
 pub struct Context {
@@ -53,7 +54,7 @@ impl Entity {
         }
     }
 
-    async fn act(&self, context: Arc<Context>, controller: &mut TaskController) -> EntityAction {
+    async fn act(&self, context: Arc<Context>, time_to_act: Duration) -> EntityAction {
         match &self {
             Entity::Waiting { id } => {
                 log::debug!(" --- waking up entity {}", id);
@@ -67,11 +68,13 @@ impl Entity {
                     async move {
                         let mut user = user.write().await;
                         log::debug!("user locked {}", user.localpart);
-                        user.act(&context).await;
+                        if (timeout(time_to_act, user.act(&context)).await).is_err() {
+                            log::debug!("user action took more than {:?}", time_to_act);
+                        }
                         log::debug!("user unlocked {}", user.localpart);
                     }
                 };
-                let handle = controller.spawn(action);
+                let handle = tokio::spawn(action);
                 EntityAction::Act(handle)
             }
         }
@@ -153,16 +156,14 @@ impl Simulation {
 
     async fn tick(&mut self, context: Arc<Context>) {
         let tick_start = Instant::now();
-        let tick_duration = &mut self.config.simulation.tick_duration.clone();
+        let tick_duration = self.config.simulation.tick_duration;
 
-        let mut controller = TaskController::with_timeout(*tick_duration);
         let mut join_handles = vec![];
 
         let user_ids = self.pick_users(self.config.simulation.users_per_tick);
-
         for user_id in user_ids {
             let entity = self.entities.get(&user_id).expect("user to exist");
-            match entity.act(context.clone(), &mut controller).await {
+            match entity.act(context.clone(), tick_duration).await {
                 EntityAction::WakeUp(user) => {
                     self.entities.insert(user_id, Entity::from_user(user));
                 }
@@ -173,7 +174,7 @@ impl Simulation {
         }
         join_all(join_handles).await;
 
-        if tick_start.elapsed().le(tick_duration) {
+        if tick_start.elapsed().le(&tick_duration) {
             sleep(tick_duration.sub(tick_start.elapsed())).await;
         }
     }
