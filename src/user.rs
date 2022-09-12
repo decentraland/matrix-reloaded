@@ -263,7 +263,7 @@ impl User {
                         SocialAction::GetChannelMembers => {
                             let channel_id = pick_random_channels(channels).await;
                             if let Some(channel_id) = channel_id {
-                                self.get_channel_members(channel_id).await;
+                                self.get_channel_members(channel_id, true).await;
                             }
                         }
                         SocialAction::None => log::debug!("user {} did nothing", self.localpart),
@@ -288,7 +288,7 @@ impl User {
                 self.respond(room_id, message_type).await
             }
             SyncEvent::UnreadRoom(room_id) => self.read_messages(room_id).await,
-            SyncEvent::GetChannelMembers(room_id) => self.get_channel_members(room_id).await,
+            SyncEvent::GetChannelMembers(room_id) => self.get_channel_members(room_id, false).await,
             _ => {}
         }
     }
@@ -298,8 +298,13 @@ impl User {
         self.client.read_messages(room_id).await;
     }
 
-    async fn get_channel_members(&self, room_id: OwnedRoomId) {
-        log::debug!("user '{}' act => {}", self.localpart, "GET CHANNEL MEMBERS");
+    async fn get_channel_members(&self, room_id: OwnedRoomId, social_action: bool) {
+        let action = if social_action {
+            "GET CHANNEL MEMBERS BY USER ACTION"
+        } else {
+            "GET CHANNEL MEMBERS FORCED"
+        };
+        log::debug!("user '{}' act => {}", self.localpart, action);
         self.client.get_channel_members(&room_id).await
     }
 
@@ -418,7 +423,10 @@ impl User {
         if let Some(room) = room {
             self.client.send_message(&room, get_random_string()).await;
         } else {
-            log::debug!("trying to send message to friend but don't have one :(")
+            log::debug!(
+                "trying to send message to {:?} but don't have one :(",
+                message_type
+            )
         }
     }
 
@@ -438,6 +446,10 @@ impl User {
     fn pick_friend(&self, context: &Context) -> Option<OwnedUserId> {
         let mut rng = rand::thread_rng();
         loop {
+            log::debug!(
+                "pick_friend: syncing users length {}",
+                context.syncing_users.len()
+            );
             let friend_id = context.syncing_users.choose(&mut rng)?;
             if friend_id.localpart() != self.localpart {
                 return Some(friend_id.clone());
