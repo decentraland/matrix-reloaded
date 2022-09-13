@@ -31,6 +31,7 @@ pub enum MessageType {
     Channel,
 }
 
+#[derive(Debug)]
 enum SocialAction {
     AddFriend,
     SendMessage(MessageType),
@@ -263,7 +264,11 @@ impl User {
                         SocialAction::GetChannelMembers => {
                             let channel_id = pick_random_channels(channels).await;
                             if let Some(channel_id) = channel_id {
-                                self.get_channel_members(channel_id, true).await;
+                                self.get_channel_members(
+                                    channel_id,
+                                    SocialAction::GetChannelMembers,
+                                )
+                                .await;
                             }
                         }
                         SocialAction::None => log::debug!("user {} did nothing", self.localpart),
@@ -288,7 +293,10 @@ impl User {
                 self.respond(room_id, message_type).await
             }
             SyncEvent::UnreadRoom(room_id) => self.read_messages(room_id).await,
-            SyncEvent::GetChannelMembers(room_id) => self.get_channel_members(room_id, false).await,
+            SyncEvent::GetChannelMembers(room_id) => {
+                self.get_channel_members(room_id, SocialAction::JoinChannel)
+                    .await
+            }
             _ => {}
         }
     }
@@ -298,13 +306,12 @@ impl User {
         self.client.read_messages(room_id).await;
     }
 
-    async fn get_channel_members(&self, room_id: OwnedRoomId, social_action: bool) {
-        let action = if social_action {
-            "GET CHANNEL MEMBERS BY USER ACTION"
-        } else {
-            "GET CHANNEL MEMBERS BY JOINING"
-        };
-        log::debug!("user '{}' act => {}", self.localpart, action);
+    async fn get_channel_members(&self, room_id: OwnedRoomId, social_action: SocialAction) {
+        log::debug!(
+            "user '{}' act => GET CHANNEL MEMBERS BY {:?}",
+            self.localpart,
+            social_action
+        );
         self.client.get_channel_members(&room_id).await
     }
 
