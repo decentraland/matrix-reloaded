@@ -116,7 +116,7 @@ impl Simulation {
             mpsc::channel::<UserNotifications>(100);
 
         let context = Arc::new(Context {
-            syncing_users: RwLock::new(self.get_syncing_users().await),
+            syncing_users: RwLock::new(Vec::new()),
             config: self.config.clone(),
             notifier: tx.clone(),
             user_notifier: user_notification_sender.clone(),
