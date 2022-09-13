@@ -29,6 +29,7 @@ pub enum UserRequest {
     Messages,
     CreateChannel,
     GetChannelMembers,
+    LeaveChannel,
 }
 
 #[derive(Debug)]
