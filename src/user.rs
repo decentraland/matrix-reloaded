@@ -416,7 +416,7 @@ impl User {
                 log::debug!("channel about to leave: {room_id}");
                 self.client.leave_room(room_id).await
             }
-            None => log::debug!("there are no room to leave"),
+            None => log::debug!("there is no room to leave"),
         }
     }
 
