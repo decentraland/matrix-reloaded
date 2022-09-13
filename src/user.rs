@@ -411,7 +411,7 @@ impl User {
 
     async fn send_message(&self, room: Option<OwnedRoomId>, message_type: MessageType) {
         log::debug!(
-            "user '{}' act => SEND {} MESSAGE",
+            "user '{}' act => SEND {:?} MESSAGE",
             self.localpart,
             message_type
         );
