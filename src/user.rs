@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
 use crate::configuration::Config;
-use crate::events::{SyncEvent, SyncEventsSender, UserNotificationsSender};
+use crate::events::{SyncEvent, SyncEventsSender, UserNotifications, UserNotificationsSender};
 use crate::simulation::Context;
 use crate::text::get_random_string;
 use async_channel::Sender;
@@ -176,6 +176,21 @@ impl User {
                     cancel_sync,
                     ticks_to_live,
                 };
+                let user_id = self.id().await;
+                if let Some(user_id) = user_id {
+                    user_notifier
+                        .send(UserNotifications::NewSyncedUser(user_id.clone()))
+                        .await
+                        .expect("channel to be open");
+
+                    log::debug!(
+                        "user '{}' with id {} sent to collector",
+                        self.localpart,
+                        user_id
+                    );
+                } else {
+                    log::debug!("user '{}' doesn't have user_id to send", self.localpart);
+                }
                 log::debug!("user '{}' now is syncing", self.localpart);
             }
             SyncResult::Failed => log::debug!(
@@ -227,7 +242,8 @@ impl User {
                 log::debug!("--- user '{}' going to start interaction", self.localpart);
                 if ticks_to_live <= &0 {
                     // it's time to log out
-                    self.log_out(cancel_sync.clone()).await;
+                    self.log_out(cancel_sync.clone(), &context.user_notifier)
+                        .await;
                 } else {
                     match pick_random_action(
                         context.config.simulation.probability_to_act,
@@ -251,7 +267,10 @@ impl User {
                             }
                         },
                         SocialAction::AddFriend => self.add_friend(context).await,
-                        SocialAction::LogOut => self.log_out(cancel_sync.clone()).await,
+                        SocialAction::LogOut => {
+                            self.log_out(cancel_sync.clone(), &context.user_notifier)
+                                .await
+                        }
                         SocialAction::UpdateStatus => self.update_status().await,
                         SocialAction::CreateChannel => {
                             self.create_channel(
@@ -331,7 +350,7 @@ impl User {
 
     async fn add_friend(&self, context: &Context) {
         log::debug!("user '{}' act => {}", self.localpart, "ADD FRIEND");
-        let friend_id = self.pick_friend(context);
+        let friend_id = self.pick_friend(context).await;
         if let Some(friend_id) = friend_id {
             self.client.add_friend(&friend_id).await;
         } else {
@@ -433,11 +452,27 @@ impl User {
     }
 
     /// Log out user and append new char to the localpart string so next iteration is a new user.
-    async fn log_out(&mut self, cancel_sync: Sender<bool>) {
+    async fn log_out(
+        &mut self,
+        cancel_sync: Sender<bool>,
+        user_notifier: &UserNotificationsSender,
+    ) {
         log::debug!("user '{}' act => {}", self.localpart, "LOG OUT");
         cancel_sync.send(true).await.expect("channel open");
         self.state = State::LoggedOut;
         self.localpart += "_";
+        let user_id = self.id().await;
+        if let Some(user_id) = user_id {
+            user_notifier
+                .send(UserNotifications::UserLoggedOut(user_id))
+                .await
+                .expect("channel to be open");
+        } else {
+            log::debug!(
+                "user '{}' doesn't have user_id to send to log out",
+                self.localpart
+            );
+        }
     }
 
     async fn update_status(&self) {
@@ -445,12 +480,14 @@ impl User {
         self.client.update_status().await;
     }
 
-    fn pick_friend(&self, context: &Context) -> Option<OwnedUserId> {
-        let mut rng = rand::thread_rng();
+    async fn pick_friend(&self, context: &Context) -> Option<OwnedUserId> {
+        let mut rng: StdRng = rand::SeedableRng::from_entropy(); // allow use it with threads
+        let synced_users = context.syncing_users.read().await;
+        let synced_users_vec = synced_users.iter().collect::<Vec<_>>();
         loop {
-            let friend_id = context.syncing_users.choose(&mut rng)?;
+            let friend_id = synced_users_vec.choose(&mut rng)?;
             if friend_id.localpart() != self.localpart {
-                return Some(friend_id.clone());
+                return Some(friend_id.to_owned().to_owned());
             }
         }
     }
