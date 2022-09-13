@@ -36,7 +36,7 @@ enum EntityAction {
 }
 
 pub struct Context {
-    pub syncing_users: Vec<OwnedUserId>,
+    pub syncing_users: RwLock<Vec<OwnedUserId>>,
     pub config: Arc<Config>,
     notifier: Sender<Event>,
     pub user_notifier: Sender<UserNotifications>,
@@ -116,7 +116,7 @@ impl Simulation {
             mpsc::channel::<UserNotifications>(100);
 
         let context = Arc::new(Context {
-            syncing_users: self.get_syncing_users().await,
+            syncing_users: RwLock::new(self.get_syncing_users().await),
             config: self.config.clone(),
             notifier: tx.clone(),
             user_notifier: user_notification_sender.clone(),
@@ -222,8 +222,20 @@ impl Simulation {
         while let Some(event) = notification_receiver.recv().await {
             match event {
                 UserNotifications::NewChannel(room_id) => {
-                    log::debug!("collect_user_notifications READING: {}", room_id);
+                    log::debug!(
+                        "collect_user_notifications event => {} data => {}",
+                        "NEW CHANNEL",
+                        room_id
+                    );
                     context.channels.write().await.insert(room_id);
+                }
+                UserNotifications::NewSyncedUser(user_id) => {
+                    log::debug!(
+                        "collect_user_notifications event => {} data => {}",
+                        "NEW SYNCED USER",
+                        user_id
+                    );
+                    context.syncing_users.write().await.push(user_id);
                 }
             }
         }

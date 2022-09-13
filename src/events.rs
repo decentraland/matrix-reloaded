@@ -1,7 +1,7 @@
 use crate::report::Report;
 use crate::user::MessageType;
 use matrix_sdk::locks::RwLock;
-use matrix_sdk::ruma::OwnedRoomId;
+use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId};
 use matrix_sdk::HttpError;
 use serde::Serialize;
 use std::sync::Arc;
@@ -34,6 +34,7 @@ pub enum UserRequest {
 #[derive(Debug)]
 pub enum UserNotifications {
     NewChannel(OwnedRoomId),
+    NewSyncedUser(OwnedUserId),
 }
 
 #[derive(Debug)]

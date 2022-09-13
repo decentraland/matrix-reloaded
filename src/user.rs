@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
 use crate::configuration::Config;
-use crate::events::{SyncEvent, SyncEventsSender, UserNotificationsSender};
+use crate::events::{SyncEvent, SyncEventsSender, UserNotifications, UserNotificationsSender};
 use crate::simulation::Context;
 use crate::text::get_random_string;
 use async_channel::Sender;
@@ -176,6 +176,21 @@ impl User {
                     cancel_sync,
                     ticks_to_live,
                 };
+                let user_id = self.id().await;
+                if let Some(user_id) = user_id {
+                    user_notifier
+                        .send(UserNotifications::NewSyncedUser(user_id.clone()))
+                        .await
+                        .expect("channel to be open");
+
+                    log::debug!(
+                        "user '{}' with id {} sent to collector",
+                        self.localpart,
+                        user_id
+                    );
+                } else {
+                    log::debug!("user '{}' doesn't have user_id to send", self.localpart);
+                }
                 log::debug!("user '{}' now is syncing", self.localpart);
             }
             SyncResult::Failed => log::debug!(
@@ -331,7 +346,7 @@ impl User {
 
     async fn add_friend(&self, context: &Context) {
         log::debug!("user '{}' act => {}", self.localpart, "ADD FRIEND");
-        let friend_id = self.pick_friend(context);
+        let friend_id = self.pick_friend(context).await;
         if let Some(friend_id) = friend_id {
             self.client.add_friend(&friend_id).await;
         } else {
@@ -445,10 +460,11 @@ impl User {
         self.client.update_status().await;
     }
 
-    fn pick_friend(&self, context: &Context) -> Option<OwnedUserId> {
-        let mut rng = rand::thread_rng();
+    async fn pick_friend(&self, context: &Context) -> Option<OwnedUserId> {
+        let mut rng: StdRng = rand::SeedableRng::from_entropy(); // allow use it with threads
         loop {
-            let friend_id = context.syncing_users.choose(&mut rng)?;
+            let synced_users = context.syncing_users.read().await;
+            let friend_id = synced_users.choose(&mut rng)?;
             if friend_id.localpart() != self.localpart {
                 return Some(friend_id.clone());
             }
