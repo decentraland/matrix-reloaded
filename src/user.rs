@@ -410,16 +410,11 @@ impl User {
     }
 
     async fn send_message(&self, room: Option<OwnedRoomId>, message_type: MessageType) {
-        match message_type {
-            MessageType::Direct => {
-                log::debug!("user '{}' act => {}", self.localpart, "SEND DIRECT MESSAGE")
-            }
-            MessageType::Channel => log::debug!(
-                "user '{}' act => {}",
-                self.localpart,
-                "SEND CHANNEL MESSAGE"
-            ),
-        }
+        log::debug!(
+            "user '{}' act => SEND {} MESSAGE",
+            self.localpart,
+            message_type
+        );
         if let Some(room) = room {
             self.client.send_message(&room, get_random_string()).await;
         } else {
