@@ -31,6 +31,7 @@ pub enum MessageType {
     Channel,
 }
 
+#[derive(Debug)]
 enum SocialAction {
     AddFriend,
     SendMessage(MessageType),
@@ -38,6 +39,7 @@ enum SocialAction {
     UpdateStatus,
     CreateChannel,
     JoinChannel,
+    GetChannelMembers,
     None,
 }
 
@@ -230,6 +232,7 @@ impl User {
                     match pick_random_action(
                         context.config.simulation.probability_to_act,
                         context.config.simulation.channels_load,
+                        context.config.simulation.allow_get_channel_members,
                     ) {
                         SocialAction::SendMessage(message_type) => match message_type {
                             MessageType::Direct => {
@@ -258,6 +261,16 @@ impl User {
                             .await
                         }
                         SocialAction::JoinChannel => self.join_channel(context).await,
+                        SocialAction::GetChannelMembers => {
+                            let channel_id = pick_random_channels(channels).await;
+                            if let Some(channel_id) = channel_id {
+                                self.get_channel_members(
+                                    channel_id,
+                                    SocialAction::GetChannelMembers,
+                                )
+                                .await;
+                            }
+                        }
                         SocialAction::None => log::debug!("user {} did nothing", self.localpart),
                     };
                 }
@@ -280,7 +293,10 @@ impl User {
                 self.respond(room_id, message_type).await
             }
             SyncEvent::UnreadRoom(room_id) => self.read_messages(room_id).await,
-            SyncEvent::GetChannelMembers(room_id) => self.get_channel_members(room_id).await,
+            SyncEvent::GetChannelMembers(room_id) => {
+                self.get_channel_members(room_id, SocialAction::JoinChannel)
+                    .await
+            }
             _ => {}
         }
     }
@@ -290,8 +306,12 @@ impl User {
         self.client.read_messages(room_id).await;
     }
 
-    async fn get_channel_members(&self, room_id: OwnedRoomId) {
-        log::debug!("user '{}' act => {}", self.localpart, "GET CHANNEL MEMBERS");
+    async fn get_channel_members(&self, room_id: OwnedRoomId, social_action: SocialAction) {
+        log::debug!(
+            "user '{}' act => GET CHANNEL MEMBERS BY {:?}",
+            self.localpart,
+            social_action
+        );
         self.client.get_channel_members(&room_id).await
     }
 
@@ -397,20 +417,18 @@ impl User {
     }
 
     async fn send_message(&self, room: Option<OwnedRoomId>, message_type: MessageType) {
-        match message_type {
-            MessageType::Direct => {
-                log::debug!("user '{}' act => {}", self.localpart, "SEND DIRECT MESSAGE")
-            }
-            MessageType::Channel => log::debug!(
-                "user '{}' act => {}",
-                self.localpart,
-                "SEND CHANNEL MESSAGE"
-            ),
-        }
+        log::debug!(
+            "user '{}' act => SEND {:?} MESSAGE",
+            self.localpart,
+            message_type
+        );
         if let Some(room) = room {
             self.client.send_message(&room, get_random_string()).await;
         } else {
-            log::debug!("trying to send message to friend but don't have one :(")
+            log::debug!(
+                "trying to send message to {:?} but don't have one :(",
+                message_type
+            )
         }
     }
 
@@ -443,11 +461,17 @@ fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
 }
 
 // we probably want to distribute these actions and don't make them random (more send messages than logouts)
-fn pick_random_action(probability_to_act: usize, channels_enabled: bool) -> SocialAction {
+fn pick_random_action(
+    probability_to_act: usize,
+    channels_enabled: bool,
+    allow_get_channel_members: bool,
+) -> SocialAction {
     let mut rng = rand::thread_rng();
     if rng.gen_ratio(probability_to_act as u32, 100) {
         if rng.gen_ratio(1, 75) {
             SocialAction::LogOut
+        } else if channels_enabled && allow_get_channel_members && rng.gen_ratio(1, 60) {
+            SocialAction::GetChannelMembers
         } else if channels_enabled && rng.gen_ratio(1, 50) {
             SocialAction::CreateChannel
         } else if channels_enabled && rng.gen_ratio(1, 35) {
