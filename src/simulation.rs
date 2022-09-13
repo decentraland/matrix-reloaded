@@ -36,7 +36,7 @@ enum EntityAction {
 }
 
 pub struct Context {
-    pub syncing_users: RwLock<Vec<OwnedUserId>>,
+    pub syncing_users: RwLock<HashSet<OwnedUserId>>,
     pub config: Arc<Config>,
     notifier: Sender<Event>,
     pub user_notifier: Sender<UserNotifications>,
@@ -116,7 +116,7 @@ impl Simulation {
             mpsc::channel::<UserNotifications>(100);
 
         let context = Arc::new(Context {
-            syncing_users: RwLock::new(Vec::new()),
+            syncing_users: RwLock::new(HashSet::new()),
             config: self.config.clone(),
             notifier: tx.clone(),
             user_notifier: user_notification_sender.clone(),
@@ -235,7 +235,15 @@ impl Simulation {
                         "NEW SYNCED USER",
                         user_id
                     );
-                    context.syncing_users.write().await.push(user_id);
+                    context.syncing_users.write().await.insert(user_id);
+                }
+                UserNotifications::UserLoggedOut(user_id) => {
+                    log::debug!(
+                        "collect_user_notifications event => {} data => {}",
+                        "USER LOGGED OUT",
+                        user_id
+                    );
+                    context.syncing_users.write().await.remove(&user_id);
                 }
             }
         }

@@ -35,6 +35,7 @@ pub enum UserRequest {
 pub enum UserNotifications {
     NewChannel(OwnedRoomId),
     NewSyncedUser(OwnedUserId),
+    UserLoggedOut(OwnedUserId),
 }
 
 #[derive(Debug)]
