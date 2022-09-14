@@ -1,5 +1,5 @@
 use crate::report::Report;
-use crate::user::MessageType;
+use crate::room::RoomType;
 use matrix_sdk::locks::RwLock;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId};
 use matrix_sdk::HttpError;
@@ -53,7 +53,7 @@ pub enum SyncEvent {
     Invite(OwnedRoomId),
     RoomCreated(OwnedRoomId),
     UnreadRoom(OwnedRoomId),
-    MessageReceived(OwnedRoomId, String, MessageType),
+    MessageReceived(OwnedRoomId, String, RoomType),
     ChannelCreated(OwnedRoomId),
     GetChannelMembers(OwnedRoomId),
 }

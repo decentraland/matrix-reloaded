@@ -26,16 +26,10 @@ pub struct User {
     pub state: State,
 }
 
-#[derive(Clone, Debug)]
-pub enum MessageType {
-    Direct,
-    Channel,
-}
-
 #[derive(Debug)]
 enum SocialAction {
     AddFriend,
-    SendMessage(MessageType),
+    SendMessage(RoomType),
     LogOut,
     UpdateStatus,
     CreateChannel,
@@ -260,14 +254,14 @@ impl User {
                         context.config.simulation.allow_get_channel_members,
                     ) {
                         SocialAction::SendMessage(message_type) => match message_type {
-                            MessageType::Direct => {
+                            RoomType::DirectMessage => {
                                 self.send_message(
                                     pick_room(rooms, RoomType::DirectMessage).await,
                                     message_type,
                                 )
                                 .await
                             }
-                            MessageType::Channel => {
+                            RoomType::Channel => {
                                 self.send_message(
                                     pick_room(rooms, RoomType::Channel).await,
                                     message_type,
@@ -288,7 +282,10 @@ impl User {
                             )
                             .await
                         }
-                        SocialAction::JoinChannel => self.join_channel(context).await,
+                        SocialAction::JoinChannel => {
+                            self.join_channel(self.pick_channel(context).await, context)
+                                .await
+                        }
                         SocialAction::GetChannelMembers => {
                             let channel_id = pick_room(rooms, RoomType::Channel).await;
                             if let Some(channel_id) = channel_id {
@@ -320,7 +317,7 @@ impl User {
     async fn react(&self, event: SyncEvent) {
         log::debug!("user '{}' act => {}", self.localpart, "REACT");
         match event {
-            SyncEvent::Invite(room_id) => self.join(&room_id, MessageType::Direct, false).await,
+            SyncEvent::Invite(room_id) => self.join(&room_id, RoomType::DirectMessage, false).await,
             SyncEvent::MessageReceived(room_id, _, message_type) => {
                 self.respond(room_id, message_type).await
             }
@@ -347,14 +344,14 @@ impl User {
         self.client.get_channel_members(&room_id).await
     }
 
-    async fn respond(&self, room: OwnedRoomId, message_type: MessageType) {
+    async fn respond(&self, room: OwnedRoomId, message_type: RoomType) {
         match message_type {
-            MessageType::Direct => log::debug!(
+            RoomType::DirectMessage => log::debug!(
                 "user '{}' act => {}",
                 self.localpart,
                 "RESPOND DIRECT MESSAGE"
             ),
-            MessageType::Channel => {
+            RoomType::Channel => {
                 log::debug!("user '{}' act => {}", self.localpart, "RESPOND CHANNEL")
             }
         }
@@ -396,8 +393,20 @@ impl User {
         }
     }
 
-    async fn join_channel(&self, context: &Context) {
-        log::debug!("user '{}' act => {}", self.localpart, "JOIN CHANNEL");
+    async fn join_channel(&self, room_id: Option<OwnedRoomId>, context: &Context) {
+        if let Some(room_id) = room_id {
+            self.join(
+                &room_id,
+                RoomType::Channel,
+                context.config.simulation.allow_get_channel_members,
+            )
+            .await;
+        } else {
+            log::debug!("user {} has no room to join", self.localpart);
+        }
+    }
+
+    async fn pick_channel(&self, context: &Context) -> Option<OwnedRoomId> {
         let room_type = RoomType::Channel;
         let user_channels = match &self.state {
             State::Sync { rooms, .. } => rooms
@@ -411,37 +420,26 @@ impl User {
                 }),
             _ => {
                 log::debug!("user '{}' was not synced", self.localpart);
-                return;
+                return None;
             }
         };
-        let ctx_channels = context.channels.read().await;
-        let exclude_user_channels = ctx_channels.difference(&user_channels).collect::<Vec<_>>();
-        if !exclude_user_channels.is_empty()
-            && user_channels.len() < context.config.simulation.channels_per_user
-        {
-            // we use this type of Random because it can be used in threads
-            // check out: https://docs.rs/rand/0.5.0/rand/rngs/struct.StdRng.html
-            // or https://stackoverflow.com/questions/65053037/how-can-i-clone-a-random-number-generator-for-different-threads-in-rust
-            let mut rng: StdRng = rand::SeedableRng::from_entropy();
-            loop {
-                let channel = exclude_user_channels.choose(&mut rng);
-                if let Some(room_id) = channel {
-                    self.join(
-                        room_id,
-                        MessageType::Channel,
-                        context.config.simulation.allow_get_channel_members,
-                    )
-                    .await;
-                    log::debug!(
-                        "user '{}' act => {} {}",
-                        self.localpart,
-                        "JOINED CHANNEL",
-                        room_id
-                    );
-                    break;
-                }
-            }
+        if user_channels.len() < context.config.simulation.channels_per_user {
+            log::debug!("user {} reach the channels per user limit", self.localpart);
+            return None;
         }
+
+        // we use this type of Random because it can be used in threads
+        // check out: https://docs.rs/rand/0.5.0/rand/rngs/struct.StdRng.html
+        // or https://stackoverflow.com/questions/65053037/how-can-i-clone-a-random-number-generator-for-different-threads-in-rust
+        let mut rng: StdRng = rand::SeedableRng::from_entropy();
+
+        let ctx_channels = context.channels.read().await;
+
+        let exclude_user_channels = ctx_channels.difference(&user_channels).collect::<Vec<_>>();
+
+        exclude_user_channels
+            .choose(&mut rng)
+            .map(|r| (*r).to_owned())
     }
 
     async fn leave_channel(&self, channel_id: Option<OwnedRoomId>) {
@@ -455,19 +453,15 @@ impl User {
         }
     }
 
-    async fn join(&self, room: &RoomId, room_type: MessageType, allow_get_channel_members: bool) {
-        match room_type {
-            MessageType::Direct => log::debug!("user '{}' act => {}", self.localpart, "JOIN ROOM"),
-            MessageType::Channel => {
-                log::debug!("user '{}' act => {}", self.localpart, "JOIN CHANNEL")
-            }
-        }
+    async fn join(&self, room: &RoomId, room_type: RoomType, allow_get_channel_members: bool) {
+        log::debug!("user '{}' act => JOIN {:?}", self.localpart, room_type);
+
         self.client
             .join_room(room, room_type, allow_get_channel_members)
             .await;
     }
 
-    async fn send_message(&self, room: Option<OwnedRoomId>, message_type: MessageType) {
+    async fn send_message(&self, room: Option<OwnedRoomId>, message_type: RoomType) {
         log::debug!(
             "user '{}' act => SEND {:?} MESSAGE",
             self.localpart,
@@ -515,13 +509,16 @@ impl User {
     async fn pick_friend(&self, context: &Context) -> Option<OwnedUserId> {
         let mut rng: StdRng = rand::SeedableRng::from_entropy(); // allow use it with threads
         let synced_users = context.syncing_users.read().await;
-        let synced_users_vec = synced_users.iter().collect::<Vec<_>>();
-        loop {
-            let friend_id = synced_users_vec.choose(&mut rng)?;
+
+        let mut synced_users = synced_users.iter().collect::<Vec<_>>();
+        synced_users.shuffle(&mut rng);
+
+        while let Some(friend_id) = synced_users.pop() {
             if friend_id.localpart() != self.localpart {
-                return Some(friend_id.to_owned().to_owned());
+                return Some(friend_id.to_owned());
             }
         }
+        None
     }
 }
 
@@ -564,9 +561,9 @@ fn pick_random_action(
         } else if rng.gen_ratio(1, 3) {
             SocialAction::AddFriend
         } else if channels_enabled && rng.gen_ratio(1, 5) {
-            SocialAction::SendMessage(MessageType::Channel)
+            SocialAction::SendMessage(RoomType::Channel)
         } else {
-            SocialAction::SendMessage(MessageType::Direct)
+            SocialAction::SendMessage(RoomType::DirectMessage)
         }
     } else {
         SocialAction::None

@@ -5,7 +5,6 @@ use crate::{
     },
     room::RoomType,
     text::get_random_string,
-    user::MessageType,
 };
 use async_channel::Sender;
 use futures::Future;
@@ -394,13 +393,13 @@ impl Client {
     pub async fn join_room(
         &self,
         room_id: &RoomId,
-        room_type: MessageType,
+        room_type: RoomType,
         allow_get_channel_members: bool,
     ) {
         let request = JoinRoomRequest::new(room_id);
         self.send_and_notify(request, UserRequest::JoinRoom).await;
         if allow_get_channel_members {
-            if let MessageType::Channel = room_type {
+            if let RoomType::Channel = room_type {
                 self.sync_channel
                     .0
                     .send(SyncEvent::GetChannelMembers(room_id.to_owned()))
@@ -632,9 +631,9 @@ async fn on_room_message(
             );
 
             let message_type = if is_channel(&room) {
-                MessageType::Channel
+                RoomType::Channel
             } else {
-                MessageType::Direct
+                RoomType::DirectMessage
             };
 
             sender
