@@ -40,6 +40,7 @@ enum SocialAction {
     CreateChannel,
     JoinChannel,
     GetChannelMembers,
+    LeaveChannel,
     None,
 }
 
@@ -290,6 +291,10 @@ impl User {
                                 .await;
                             }
                         }
+                        SocialAction::LeaveChannel => {
+                            self.leave_channel(pick_random_channels(channels).await)
+                                .await
+                        }
                         SocialAction::None => log::debug!("user {} did nothing", self.localpart),
                     };
                 }
@@ -423,6 +428,17 @@ impl User {
         }
     }
 
+    async fn leave_channel(&self, channel_id: Option<OwnedRoomId>) {
+        log::debug!("user '{}' act => {}", self.localpart, "LEAVE CHANNEL");
+        match channel_id {
+            Some(room_id) => {
+                log::debug!("channel about to leave: {room_id}");
+                self.client.leave_room(room_id).await
+            }
+            None => log::debug!("there is no room to leave"),
+        }
+    }
+
     async fn join(&self, room: &RoomId, room_type: MessageType, allow_get_channel_members: bool) {
         match room_type {
             MessageType::Direct => log::debug!("user '{}' act => {}", self.localpart, "JOIN ROOM"),
@@ -507,6 +523,8 @@ fn pick_random_action(
     if rng.gen_ratio(probability_to_act as u32, 100) {
         if rng.gen_ratio(1, 75) {
             SocialAction::LogOut
+        } else if channels_enabled && rng.gen_ratio(1, 70) {
+            SocialAction::LeaveChannel
         } else if channels_enabled && allow_get_channel_members && rng.gen_ratio(1, 60) {
             SocialAction::GetChannelMembers
         } else if channels_enabled && rng.gen_ratio(1, 50) {

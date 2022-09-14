@@ -14,6 +14,7 @@ use matrix_sdk::ruma::{
             account::register::v3::Request as RegistrationRequest,
             error::ErrorKind,
             membership::join_room_by_id::v3::Request as JoinRoomRequest,
+            membership::leave_room::v3::Request as LeaveRoomRequest,
             message::get_message_events::v3::Request as MessagesRequest,
             presence::set_presence::v3::Request as UpdatePresenceRequest,
             room::create_room::v3::{Request as CreateRoomRequest, RoomPreset},
@@ -443,6 +444,11 @@ impl Client {
                 log::debug!("get_channel_members: room {} not found", room_id)
             }
         }
+    }
+
+    pub async fn leave_room(&self, room_id: OwnedRoomId) {
+        let req = LeaveRoomRequest::new(&room_id);
+        self.send_and_notify(req, UserRequest::LeaveChannel).await;
     }
 
     pub async fn update_status(&self) {
