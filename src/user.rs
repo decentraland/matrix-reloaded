@@ -1,12 +1,12 @@
 use std::cmp::max;
 use std::collections::HashSet;
-use std::iter::FromIterator;
 use std::sync::Arc;
 
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
 use crate::configuration::Config;
 use crate::events::{SyncEvent, SyncEventsSender, UserNotifications, UserNotificationsSender};
+use crate::room::RoomType;
 use crate::simulation::Context;
 use crate::text::get_random_string;
 use async_channel::Sender;
@@ -16,6 +16,7 @@ use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
 use rand::distributions::Alphanumeric;
 use rand::prelude::SliceRandom;
 use rand::rngs::StdRng;
+use rand::seq::IteratorRandom;
 use rand::Rng;
 
 #[derive(Clone, Debug)]
@@ -50,8 +51,7 @@ pub enum State {
     Unregistered,
     LoggedIn,
     Sync {
-        direct_messages: Arc<RwLock<Vec<OwnedRoomId>>>, // available rooms that user can send messages (personal/direct rooms)
-        channels: Arc<RwLock<HashSet<OwnedRoomId>>>, // available channels that user can send messages (he joined or created)
+        rooms: Arc<RwLock<HashSet<(OwnedRoomId, RoomType)>>>, // rooms can be channels or direct messages
         events: Arc<Mutex<Vec<SyncEvent>>>, // recent events to be processed and react, for instance to respond to friends or join rooms
         cancel_sync: Sender<bool>,          // cancel sync task
         ticks_to_live: usize,               // ticks to live
@@ -81,18 +81,9 @@ impl User {
         }
     }
 
-    async fn add_room(&self, room_id: &RoomId) {
-        if let State::Sync {
-            direct_messages, ..
-        } = &self.state
-        {
-            direct_messages.write().await.push(room_id.to_owned());
-        }
-    }
-
-    async fn add_channel(&self, room_id: &RoomId) {
-        if let State::Sync { channels, .. } = &self.state {
-            channels.write().await.insert(room_id.to_owned());
+    async fn add_room(&self, room: (OwnedRoomId, RoomType)) {
+        if let State::Sync { rooms, .. } = &self.state {
+            rooms.write().await.insert(room);
         }
     }
 
@@ -141,17 +132,26 @@ impl User {
         log::debug!("user '{}' act => {}", self.localpart, "SYNC");
         match self.client.sync(user_notifier).await {
             SyncResult::Ok {
-                direct_messages,
+                rooms,
                 invited_rooms,
                 cancel_sync,
-                channels,
             } => {
                 log::debug!(
                     "user '{}' has {} dm rooms",
                     self.localpart,
-                    direct_messages.len()
+                    rooms
+                        .iter()
+                        .filter(|r| matches!(r.1, RoomType::DirectMessage))
+                        .count()
                 );
-                log::debug!("user '{}' has {} channels", self.localpart, channels.len());
+                log::debug!(
+                    "user '{}' has {} channels",
+                    self.localpart,
+                    rooms
+                        .iter()
+                        .filter(|r| matches!(r.1, RoomType::Channel))
+                        .count()
+                );
                 log::debug!(
                     "user '{}' has been invited to {} rooms",
                     self.localpart,
@@ -163,17 +163,21 @@ impl User {
                     events.push(SyncEvent::Invite(invited_room));
                 }
 
-                for dm_room in &direct_messages {
-                    events.push(SyncEvent::UnreadRoom(dm_room.clone()));
+                for (room_id, _) in &rooms {
+                    events.push(SyncEvent::UnreadRoom(room_id.clone()));
                 }
 
-                let channels = HashSet::from_iter(channels.iter().cloned());
+                let rooms = rooms
+                    .iter()
+                    .fold(HashSet::new(), |mut set, (room_id, room_type)| {
+                        set.insert((room_id.to_owned(), room_type.clone()));
+                        set
+                    });
 
                 let ticks_to_live = get_ticks_to_live(config);
                 self.state = State::Sync {
-                    direct_messages: Arc::new(RwLock::new(direct_messages)),
+                    rooms: Arc::new(RwLock::new(rooms)),
                     events: Arc::new(Mutex::new(events)),
-                    channels: Arc::new(RwLock::new(channels)),
                     cancel_sync,
                     ticks_to_live,
                 };
@@ -207,8 +211,13 @@ impl User {
         let mut events = events.lock().await;
         for event in new_events {
             match event {
-                SyncEvent::RoomCreated(room_id) => self.add_room(&room_id).await,
-                SyncEvent::ChannelCreated(room_id) => self.add_channel(&room_id).await,
+                SyncEvent::RoomCreated(room_id) => {
+                    self.add_room((room_id.to_owned(), RoomType::DirectMessage))
+                        .await
+                }
+                SyncEvent::ChannelCreated(room_id) => {
+                    self.add_room((room_id.to_owned(), RoomType::Channel)).await
+                }
                 _ => events.push(event),
             }
         }
@@ -225,11 +234,10 @@ impl User {
 
         self.decrease_ticks_to_live();
         if let State::Sync {
-            direct_messages,
+            rooms,
             events,
             cancel_sync,
             ticks_to_live,
-            channels,
         } = &self.state
         {
             self.read_sync_events(events).await;
@@ -254,14 +262,14 @@ impl User {
                         SocialAction::SendMessage(message_type) => match message_type {
                             MessageType::Direct => {
                                 self.send_message(
-                                    pick_random_room(direct_messages).await,
+                                    pick_room(rooms, RoomType::DirectMessage).await,
                                     message_type,
                                 )
                                 .await
                             }
                             MessageType::Channel => {
                                 self.send_message(
-                                    pick_random_channels(channels).await,
+                                    pick_room(rooms, RoomType::Channel).await,
                                     message_type,
                                 )
                                 .await
@@ -275,14 +283,14 @@ impl User {
                         SocialAction::UpdateStatus => self.update_status().await,
                         SocialAction::CreateChannel => {
                             self.create_channel(
-                                channels.read().await.len(),
+                                get_room_count(rooms, RoomType::Channel).await,
                                 context.config.simulation.channels_per_user,
                             )
                             .await
                         }
                         SocialAction::JoinChannel => self.join_channel(context).await,
                         SocialAction::GetChannelMembers => {
-                            let channel_id = pick_random_channels(channels).await;
+                            let channel_id = pick_room(rooms, RoomType::Channel).await;
                             if let Some(channel_id) = channel_id {
                                 self.get_channel_members(
                                     channel_id,
@@ -292,7 +300,7 @@ impl User {
                             }
                         }
                         SocialAction::LeaveChannel => {
-                            self.leave_channel(pick_random_channels(channels).await)
+                            self.leave_channel(pick_room(rooms, RoomType::Channel).await)
                                 .await
                         }
                         SocialAction::None => log::debug!("user {} did nothing", self.localpart),
@@ -390,15 +398,23 @@ impl User {
 
     async fn join_channel(&self, context: &Context) {
         log::debug!("user '{}' act => {}", self.localpart, "JOIN CHANNEL");
+        let room_type = RoomType::Channel;
         let user_channels = match &self.state {
-            State::Sync { channels, .. } => channels,
+            State::Sync { rooms, .. } => rooms
+                .read()
+                .await
+                .iter()
+                .filter(|(_, r)| room_type == *r)
+                .fold(HashSet::new(), |mut channels, item| {
+                    channels.insert(item.0.to_owned());
+                    channels
+                }),
             _ => {
                 log::debug!("user '{}' was not synced", self.localpart);
                 return;
             }
         };
         let ctx_channels = context.channels.read().await;
-        let user_channels = user_channels.read().await;
         let exclude_user_channels = ctx_channels.difference(&user_channels).collect::<Vec<_>>();
         if !exclude_user_channels.is_empty()
             && user_channels.len() < context.config.simulation.channels_per_user
@@ -509,6 +525,18 @@ impl User {
     }
 }
 
+async fn get_room_count(
+    rooms: &Arc<RwLock<HashSet<(OwnedRoomId, RoomType)>>>,
+    room_type: RoomType,
+) -> usize {
+    rooms
+        .read()
+        .await
+        .iter()
+        .filter(|(_, r)| room_type == *r)
+        .count()
+}
+
 fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
     format!("user_{id_number}_{execution_id}")
 }
@@ -545,20 +573,17 @@ fn pick_random_action(
     }
 }
 
-async fn pick_random_room(rooms: &RwLock<Vec<OwnedRoomId>>) -> Option<OwnedRoomId> {
+async fn pick_room(
+    rooms: &RwLock<HashSet<(OwnedRoomId, RoomType)>>,
+    room_type: RoomType,
+) -> Option<OwnedRoomId> {
     rooms
         .read()
         .await
+        .iter()
+        .filter(|(_, r)| room_type == *r)
         .choose(&mut rand::thread_rng())
-        .map(|room| room.to_owned())
-}
-
-async fn pick_random_channels(channels: &RwLock<HashSet<OwnedRoomId>>) -> Option<OwnedRoomId> {
-    let channels = channels.read().await;
-    let channels_vec = channels.iter().collect::<Vec<_>>();
-    channels_vec
-        .choose(&mut rand::thread_rng())
-        .map(|room| room.to_owned().to_owned())
+        .map(|room| room.0.to_owned())
 }
 
 /// Get random value for ticks to live related to the total of ticks in simulation,

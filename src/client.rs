@@ -3,6 +3,7 @@ use crate::{
     events::{
         Event, SyncEvent, SyncEventsSender, UserNotifications, UserNotificationsSender, UserRequest,
     },
+    room::RoomType,
     text::get_random_string,
     user::MessageType,
 };
@@ -77,9 +78,8 @@ pub enum RegisterResult {
 
 pub enum SyncResult {
     Ok {
-        direct_messages: Vec<OwnedRoomId>,
+        rooms: Vec<(OwnedRoomId, RoomType)>,
         invited_rooms: Vec<OwnedRoomId>,
-        channels: Vec<OwnedRoomId>, // channels where user has joined
         cancel_sync: Sender<bool>,
     },
     Failed,
@@ -254,16 +254,15 @@ impl Client {
         let res = response.expect("already checked it is not an error");
         let invited_rooms = res.rooms.invite.keys().cloned().collect::<Vec<_>>();
 
-        let mut direct_messages = Vec::new();
-        let mut channels = Vec::new();
+        let mut rooms = Vec::new();
 
         for (id, _) in res.rooms.join {
             match client.get_room(&id) {
                 Some(room) => {
                     if is_channel(&room) {
-                        channels.push(id);
+                        rooms.push((id, RoomType::Channel))
                     } else {
-                        direct_messages.push(id)
+                        rooms.push((id, RoomType::DirectMessage))
                     }
                 }
                 None => log::debug!("room not found in store {}", id),
@@ -271,10 +270,9 @@ impl Client {
         }
 
         SyncResult::Ok {
-            direct_messages,
+            rooms,
             invited_rooms,
             cancel_sync,
-            channels,
         }
     }
 
