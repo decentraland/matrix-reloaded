@@ -23,10 +23,6 @@ on:
         description: "Users to act per tick"
         required: true
         default: "15"
-      grace_period_duration_in_secs:
-        description: "Time to wait for all messages to be delivered"
-        required: true
-        default: "30"
       execution_id:
         description: "Used in user ID localpart"
         required: false
