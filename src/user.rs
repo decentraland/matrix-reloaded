@@ -133,18 +133,12 @@ impl User {
                 log::debug!(
                     "user '{}' has {} dm rooms",
                     self.localpart,
-                    rooms
-                        .iter()
-                        .filter(|r| matches!(r.1, RoomType::DirectMessage))
-                        .count()
+                    get_room_count(&rooms, RoomType::DirectMessage)
                 );
                 log::debug!(
                     "user '{}' has {} channels",
                     self.localpart,
-                    rooms
-                        .iter()
-                        .filter(|r| matches!(r.1, RoomType::Channel))
-                        .count()
+                    get_room_count(&rooms, RoomType::Channel)
                 );
                 log::debug!(
                     "user '{}' has been invited to {} rooms",
@@ -276,8 +270,9 @@ impl User {
                         }
                         SocialAction::UpdateStatus => self.update_status().await,
                         SocialAction::CreateChannel => {
+                            let rooms = rooms.read().await;
                             self.create_channel(
-                                get_room_count(rooms, RoomType::Channel).await,
+                                get_room_count(&*rooms, RoomType::Channel),
                                 context.config.simulation.channels_per_user,
                             )
                             .await
@@ -522,16 +517,11 @@ impl User {
     }
 }
 
-async fn get_room_count(
-    rooms: &Arc<RwLock<HashSet<(OwnedRoomId, RoomType)>>>,
-    room_type: RoomType,
-) -> usize {
-    rooms
-        .read()
-        .await
-        .iter()
-        .filter(|(_, r)| room_type == *r)
-        .count()
+fn get_room_count<'r, I>(rooms: I, room_type: RoomType) -> usize
+where
+    I: IntoIterator<Item = &'r (OwnedRoomId, RoomType)>,
+{
+    rooms.into_iter().filter(|(_, r)| room_type == *r).count()
 }
 
 fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
