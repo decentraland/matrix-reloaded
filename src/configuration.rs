@@ -108,7 +108,7 @@ pub struct Config {
     pub server: Server,
     pub simulation: Simulation,
     pub requests: Requests,
-    pub interaction_ratios: Option<InteractionRatios>
+    pub interaction_ratios: Option<InteractionRatios>,
 }
 
 impl Config {
@@ -139,7 +139,8 @@ impl Config {
 
         let mut config = config.try_deserialize::<Self>()?;
 
-        let interaction_ratios: InteractionRatios = serde_json::from_str(config.simulation.interaction_ratios_config.as_str()).unwrap();
+        let interaction_ratios: InteractionRatios =
+            serde_json::from_str(config.simulation.interaction_ratios_config.as_str()).unwrap();
         config.interaction_ratios = Some(interaction_ratios);
 
         log::debug!("Config: {:#?}", config);

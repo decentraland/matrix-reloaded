@@ -597,7 +597,10 @@ fn pick_random_action(
                 SocialAction::LogOut
             } else if channels_enabled && rng.gen_ratio(1, interaction_ratios.leave_channel) {
                 SocialAction::LeaveChannel
-            } else if channels_enabled && allow_get_channel_members && rng.gen_ratio(1, interaction_ratios.get_channel_members) {
+            } else if channels_enabled
+                && allow_get_channel_members
+                && rng.gen_ratio(1, interaction_ratios.get_channel_members)
+            {
                 SocialAction::GetChannelMembers
             } else if channels_enabled && rng.gen_ratio(1, interaction_ratios.create_channel) {
                 SocialAction::CreateChannel
@@ -607,7 +610,8 @@ fn pick_random_action(
                 SocialAction::UpdateStatus
             } else if rng.gen_ratio(1, interaction_ratios.add_friend) {
                 SocialAction::AddFriend
-            } else if channels_enabled && rng.gen_ratio(1, interaction_ratios.send_channel_message) {
+            } else if channels_enabled && rng.gen_ratio(1, interaction_ratios.send_channel_message)
+            {
                 SocialAction::SendMessage(RoomType::Channel)
             } else {
                 SocialAction::SendMessage(RoomType::DirectMessage)
