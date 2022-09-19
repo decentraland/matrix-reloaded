@@ -12,6 +12,7 @@ output = "output"
 channels_per_user = 5
 channels_load = true
 allow_get_channel_members = false
+interaction_ratios_config = '{"log_out":75,"leave_channel":70,"get_channel_members":60,"create_channel":50,"join_channel":35,"update_status":25,"add_friend":3,"send_channel_message":10}'
 
 [requests]
 retry_enabled = true

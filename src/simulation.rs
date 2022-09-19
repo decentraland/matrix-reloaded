@@ -114,6 +114,7 @@ impl Simulation {
     pub async fn run(&mut self) {
         println!("server: {:#?}", self.config.server);
         println!("simulation config: {:#?}", self.config.simulation);
+        println!("interaction config: {:#?}", self.config.interaction_ratios);
 
         self.progress.start();
         // channel used to share events from users to the Event Collector

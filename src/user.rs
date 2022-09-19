@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
-use crate::configuration::Config;
+use crate::configuration::{Config, InteractionRatios};
 use crate::events::{SyncEvent, SyncEventsSender, UserNotifications, UserNotificationsSender};
 use crate::room::RoomType;
 use crate::simulation::Context;
@@ -291,6 +291,7 @@ impl User {
                 } else {
                     match pick_random_action(
                         context.config.simulation.probability_to_act,
+                        &context.config.interaction_ratios,
                         context.config.simulation.channels_load,
                         context.config.simulation.allow_get_channel_members,
                     ) {
@@ -585,29 +586,34 @@ fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
 // we probably want to distribute these actions and don't make them random (more send messages than logouts)
 fn pick_random_action(
     probability_to_act: usize,
+    interaction_ratios: &Option<InteractionRatios>,
     channels_enabled: bool,
     allow_get_channel_members: bool,
 ) -> SocialAction {
     let mut rng = rand::thread_rng();
-    if rng.gen_ratio(probability_to_act as u32, 100) {
-        if rng.gen_ratio(1, 75) {
-            SocialAction::LogOut
-        } else if channels_enabled && rng.gen_ratio(1, 70) {
-            SocialAction::LeaveChannel
-        } else if channels_enabled && allow_get_channel_members && rng.gen_ratio(1, 60) {
-            SocialAction::GetChannelMembers
-        } else if channels_enabled && rng.gen_ratio(1, 50) {
-            SocialAction::CreateChannel
-        } else if channels_enabled && rng.gen_ratio(1, 35) {
-            SocialAction::JoinChannel
-        } else if rng.gen_ratio(1, 25) {
-            SocialAction::UpdateStatus
-        } else if rng.gen_ratio(1, 3) {
-            SocialAction::AddFriend
-        } else if channels_enabled && rng.gen_ratio(1, 5) {
-            SocialAction::SendMessage(RoomType::Channel)
+    if let Some(interaction_ratios) = interaction_ratios {
+        if rng.gen_ratio(probability_to_act as u32, 100) {
+            if rng.gen_ratio(1, interaction_ratios.log_out) {
+                SocialAction::LogOut
+            } else if channels_enabled && rng.gen_ratio(1, interaction_ratios.leave_channel) {
+                SocialAction::LeaveChannel
+            } else if channels_enabled && allow_get_channel_members && rng.gen_ratio(1, interaction_ratios.get_channel_members) {
+                SocialAction::GetChannelMembers
+            } else if channels_enabled && rng.gen_ratio(1, interaction_ratios.create_channel) {
+                SocialAction::CreateChannel
+            } else if channels_enabled && rng.gen_ratio(1, interaction_ratios.join_channel) {
+                SocialAction::JoinChannel
+            } else if rng.gen_ratio(1, interaction_ratios.update_status) {
+                SocialAction::UpdateStatus
+            } else if rng.gen_ratio(1, interaction_ratios.add_friend) {
+                SocialAction::AddFriend
+            } else if channels_enabled && rng.gen_ratio(1, interaction_ratios.send_channel_message) {
+                SocialAction::SendMessage(RoomType::Channel)
+            } else {
+                SocialAction::SendMessage(RoomType::DirectMessage)
+            }
         } else {
-            SocialAction::SendMessage(RoomType::DirectMessage)
+            SocialAction::None
         }
     } else {
         SocialAction::None

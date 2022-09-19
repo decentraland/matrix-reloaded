@@ -3,6 +3,7 @@ use clap::Parser;
 use config::{ConfigError, File};
 use regex::Regex;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_with::serde_as;
 use serde_with::DurationSeconds;
 use std::time::Duration;
@@ -63,6 +64,17 @@ pub struct Server {
     pub homeserver: String,
     pub wk_login: bool,
 }
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct InteractionRatios {
+    pub log_out: u32,
+    pub leave_channel: u32,
+    pub get_channel_members: u32,
+    pub create_channel: u32,
+    pub join_channel: u32,
+    pub update_status: u32,
+    pub add_friend: u32,
+    pub send_channel_message: u32,
+}
 
 #[serde_as]
 #[derive(Debug, Deserialize, Clone)]
@@ -83,6 +95,7 @@ pub struct Simulation {
     pub channels_load: bool,
     pub channels_per_user: usize,
     pub allow_get_channel_members: bool,
+    pub interaction_ratios_config: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -95,6 +108,7 @@ pub struct Config {
     pub server: Server,
     pub simulation: Simulation,
     pub requests: Requests,
+    pub interaction_ratios: Option<InteractionRatios>
 }
 
 impl Config {
@@ -123,7 +137,13 @@ impl Config {
             .set_default("simulation.allow_get_channel_members", false)?
             .build()?;
 
+        let mut config = config.try_deserialize::<Self>()?;
+
+        let interaction_ratios: InteractionRatios = serde_json::from_str(config.simulation.interaction_ratios_config.as_str()).unwrap();
+        config.interaction_ratios = Some(interaction_ratios);
+
         log::debug!("Config: {:#?}", config);
-        config.try_deserialize()
+
+        Ok(config)
     }
 }
