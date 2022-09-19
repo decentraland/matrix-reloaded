@@ -3,8 +3,8 @@ use crate::{
     events::{
         Event, SyncEvent, SyncEventsSender, UserNotifications, UserNotificationsSender, UserRequest,
     },
+    room::RoomType,
     text::get_random_string,
-    user::MessageType,
 };
 use async_channel::Sender;
 use futures::Future;
@@ -77,9 +77,8 @@ pub enum RegisterResult {
 
 pub enum SyncResult {
     Ok {
-        direct_messages: Vec<OwnedRoomId>,
+        rooms: Vec<(OwnedRoomId, RoomType)>,
         invited_rooms: Vec<OwnedRoomId>,
-        channels: Vec<OwnedRoomId>, // channels where user has joined
         cancel_sync: Sender<bool>,
     },
     Failed,
@@ -254,16 +253,15 @@ impl Client {
         let res = response.expect("already checked it is not an error");
         let invited_rooms = res.rooms.invite.keys().cloned().collect::<Vec<_>>();
 
-        let mut direct_messages = Vec::new();
-        let mut channels = Vec::new();
+        let mut rooms = Vec::new();
 
         for (id, _) in res.rooms.join {
             match client.get_room(&id) {
                 Some(room) => {
                     if is_channel(&room) {
-                        channels.push(id);
+                        rooms.push((id, RoomType::Channel))
                     } else {
-                        direct_messages.push(id)
+                        rooms.push((id, RoomType::DirectMessage))
                     }
                 }
                 None => log::debug!("room not found in store {}", id),
@@ -271,10 +269,9 @@ impl Client {
         }
 
         SyncResult::Ok {
-            direct_messages,
+            rooms,
             invited_rooms,
             cancel_sync,
-            channels,
         }
     }
 
@@ -396,13 +393,13 @@ impl Client {
     pub async fn join_room(
         &self,
         room_id: &RoomId,
-        room_type: MessageType,
+        room_type: RoomType,
         allow_get_channel_members: bool,
     ) {
         let request = JoinRoomRequest::new(room_id);
         self.send_and_notify(request, UserRequest::JoinRoom).await;
         if allow_get_channel_members {
-            if let MessageType::Channel = room_type {
+            if let RoomType::Channel = room_type {
                 self.sync_channel
                     .0
                     .send(SyncEvent::GetChannelMembers(room_id.to_owned()))
@@ -634,9 +631,9 @@ async fn on_room_message(
             );
 
             let message_type = if is_channel(&room) {
-                MessageType::Channel
+                RoomType::Channel
             } else {
-                MessageType::Direct
+                RoomType::DirectMessage
             };
 
             sender

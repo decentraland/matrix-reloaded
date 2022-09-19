@@ -3,6 +3,7 @@ pub mod configuration;
 mod events;
 pub mod progress;
 mod report;
+mod room;
 pub mod simulation;
 mod text;
 mod time;
