@@ -518,7 +518,9 @@ impl User {
             message_type
         );
         if let Some(room) = room {
-            self.client.send_message(&room, get_random_string()).await;
+            self.client
+                .send_message(&room, get_random_string(), message_type)
+                .await;
         } else {
             log::debug!(
                 "trying to send message to {:?} but don't have one :(",
