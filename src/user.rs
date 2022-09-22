@@ -232,7 +232,7 @@ impl User {
             let mut events = events.lock().await;
             if let Some(event) = events.pop() {
                 log::debug!("--- user '{}' going to react", self.localpart);
-                self.react(event).await
+                self.react(event, context).await
             } else {
                 drop(events);
 
@@ -309,11 +309,18 @@ impl User {
             *ticks_to_live -= 1;
         }
     }
-    async fn react(&self, event: SyncEvent) {
+    async fn react(&self, event: SyncEvent, ctx: &Context) {
         log::debug!("user '{}' act => {}", self.localpart, "REACT");
         match event {
             SyncEvent::Invite(room_id) => self.join(&room_id, RoomType::DirectMessage, false).await,
             SyncEvent::MessageReceived(room_id, _, message_type) => {
+                if RoomType::Channel == message_type && !ctx.config.simulation.channels_load {
+                    log::debug!(
+                        "user '{}' not responding because channels are disabled",
+                        self.localpart
+                    );
+                    return;
+                }
                 self.respond(room_id, message_type).await
             }
             SyncEvent::UnreadRoom(room_id) => self.read_messages(room_id).await,
