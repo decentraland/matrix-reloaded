@@ -28,7 +28,7 @@ use matrix_sdk::ruma::{
     assign,
     events::{
         room::{
-            create::OriginalSyncRoomCreateEvent,
+            join_rules::OriginalSyncRoomJoinRulesEvent,
             member::StrippedRoomMemberEvent,
             message::{
                 MessageType as MatrixMessageType, OriginalSyncRoomMessageEvent,
@@ -244,7 +244,7 @@ impl Client {
 
         add_invite_event_handler(client, tx, &user_id).await;
         add_room_message_event_handler(client, tx, &user_id, &self.event_notifier).await;
-        add_created_room_event_handler(client, user_notifier, tx).await;
+        add_room_join_rules_event_handler(client, user_notifier, tx).await;
 
         let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
 
@@ -554,7 +554,7 @@ async fn add_invite_event_handler(
         .await;
 }
 
-async fn add_created_room_event_handler(
+async fn add_room_join_rules_event_handler(
     client: &matrix_sdk::Client,
     user_notifier: &UserNotificationsSender,
     tx: &Sender<SyncEvent>,
@@ -563,18 +563,18 @@ async fn add_created_room_event_handler(
         .register_event_handler({
             let user_notifier = user_notifier.clone();
             let tx = tx.clone();
-            move |_event: OriginalSyncRoomCreateEvent, room: Room| {
+            move |_event: OriginalSyncRoomJoinRulesEvent, room: Room| {
                 let user_notifier = user_notifier.clone();
                 let tx = tx.clone();
                 async move {
-                    on_room_created(room, user_notifier, tx).await;
+                    on_room_join_rules(room, user_notifier, tx).await;
                 }
             }
         })
         .await;
 }
 
-async fn on_room_created(
+async fn on_room_join_rules(
     room: Room,
     user_notifier: UserNotificationsSender,
     tx: Sender<SyncEvent>,
@@ -659,5 +659,5 @@ fn get_room_alias(first: &UserId, second: &UserId) -> String {
 }
 
 fn is_channel(room: &Room) -> bool {
-    !room.is_direct() && room.is_public()
+    room.is_public()
 }
