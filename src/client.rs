@@ -28,7 +28,7 @@ use matrix_sdk::ruma::{
     assign,
     events::{
         room::{
-            create::OriginalSyncRoomCreateEvent,
+            join_rules::OriginalSyncRoomJoinRulesEvent,
             member::StrippedRoomMemberEvent,
             message::{
                 MessageType as MatrixMessageType, OriginalSyncRoomMessageEvent,
@@ -220,7 +220,7 @@ impl Client {
 
                 add_invite_event_handler(client, tx, &user_id).await;
                 add_room_message_event_handler(client, tx, &user_id, &self.event_notifier).await;
-                add_created_room_event_handler(client, user_notifier, tx).await;
+                add_room_join_rules_event_handler(client, user_notifier, tx).await;
 
                 let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
 
@@ -291,7 +291,7 @@ impl Client {
         let user_id = client.user_id().await.expect("user id should be present");
         let alias = get_room_alias(&user_id, friend_id);
         let invites = [friend_id.to_owned()];
-        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias), invite: &invites, is_direct: true });
+        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias), invite: &invites, is_direct: true, preset: Some(RoomPreset::TrustedPrivateChat) });
         let response = self
             .instrument(UserRequest::CreateRoom, || async {
                 client.create_room(request).await
@@ -507,7 +507,7 @@ async fn add_invite_event_handler(
         .await;
 }
 
-async fn add_created_room_event_handler(
+async fn add_room_join_rules_event_handler(
     client: &matrix_sdk::Client,
     user_notifier: &UserNotificationsSender,
     tx: &Sender<SyncEvent>,
@@ -516,18 +516,18 @@ async fn add_created_room_event_handler(
         .register_event_handler({
             let user_notifier = user_notifier.clone();
             let tx = tx.clone();
-            move |_event: OriginalSyncRoomCreateEvent, room: Room| {
+            move |_event: OriginalSyncRoomJoinRulesEvent, room: Room| {
                 let user_notifier = user_notifier.clone();
                 let tx = tx.clone();
                 async move {
-                    on_room_created(room, user_notifier, tx).await;
+                    on_room_join_rules(room, user_notifier, tx).await;
                 }
             }
         })
         .await;
 }
 
-async fn on_room_created(
+async fn on_room_join_rules(
     room: Room,
     user_notifier: UserNotificationsSender,
     tx: Sender<SyncEvent>,
@@ -578,16 +578,17 @@ async fn on_room_message(
                 return;
             }
 
-            log::debug!(
-                "Message received! next time user {} will have someone to respond :D",
-                user_id
-            );
-
             let message_type = if is_channel(&room) {
                 RoomType::Channel
             } else {
                 RoomType::DirectMessage
             };
+
+            log::debug!(
+                "Message {:?} received! next time user {} will have someone to respond :D",
+                message_type,
+                user_id
+            );
 
             sender
                 .send(SyncEvent::MessageReceived(
@@ -612,5 +613,5 @@ fn get_room_alias(first: &UserId, second: &UserId) -> String {
 }
 
 fn is_channel(room: &Room) -> bool {
-    !room.is_direct() && room.is_public()
+    room.is_public()
 }
