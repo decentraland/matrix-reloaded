@@ -291,7 +291,7 @@ impl Client {
         let user_id = client.user_id().await.expect("user id should be present");
         let alias = get_room_alias(&user_id, friend_id);
         let invites = [friend_id.to_owned()];
-        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias), invite: &invites, is_direct: true });
+        let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias), invite: &invites, is_direct: true, preset: Some(RoomPreset::TrustedPrivateChat) });
         let response = self
             .instrument(UserRequest::CreateRoom, || async {
                 client.create_room(request).await
