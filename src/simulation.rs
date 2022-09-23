@@ -43,6 +43,17 @@ pub struct Context {
     pub channels: RwLock<HashSet<OwnedRoomId>>, // public channels created by all users
 }
 
+#[derive(Debug)]
+#[allow(dead_code)] // fields are not read but printed
+pub struct ChannelsInfo {
+    max_channels_user_has: usize,
+    min_channels_user_has: usize,
+    avg_channels_per_user: f64,
+    user_ready_count: usize,
+    sum_of_all_channels_joined_by_users: usize,
+    unique_channels_joined: usize,
+}
+
 impl Entity {
     fn waiting(id: usize) -> Self {
         Self::Waiting { id }
@@ -112,6 +123,7 @@ impl Simulation {
         let event_collector = EventCollector::new();
         let events_report = event_collector.start(rx);
 
+        // channel used to allow each user to notify the simulation process
         let (user_notification_sender, user_notification_receiver) =
             mpsc::channel::<UserNotifications>(100);
 
@@ -141,7 +153,77 @@ impl Simulation {
         // wait for report response
         let final_report = events_report.await.expect("events collection to end");
 
-        self.store_report(&final_report).await;
+        // collect channels info
+        let mut channels_info: Option<ChannelsInfo> = None;
+        if context.config.simulation.channels_load {
+            let collect = self.get_channels_info();
+            channels_info = Some(collect);
+        }
+
+        self.store_report(&final_report, channels_info).await;
+    }
+
+    fn get_ready_entities(&self) -> impl Iterator<Item = &Arc<RwLock<User>>> {
+        self.entities.values().filter_map(|entity| {
+            if let Entity::Ready { user } = entity {
+                Some(user)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn get_channels_info(&self) -> ChannelsInfo {
+        let ready_users = self.get_ready_entities();
+        let (
+            max_channels,
+            min_channles,
+            total_chans_of_all_users,
+            unique_channels_joined,
+            user_ready_count,
+        ) = ready_users.fold(
+            (0, usize::MAX, 0, HashSet::new(), 0),
+            |(max, min, total_chans_of_all_users, mut unique_channels_joined, user_ready_count),
+             user| {
+                let u = user.try_read();
+                let current_user_count = user_ready_count + 1;
+
+                if let Ok(u) = u {
+                    log::debug!("getting user {} channel stats", u.localpart);
+                    let results = u.get_user_channels_stats((
+                        max,
+                        min,
+                        total_chans_of_all_users,
+                        &mut unique_channels_joined,
+                    ));
+                    log::debug!("channel stats - user {} - {:?}", u.localpart, results);
+                    (
+                        results.0,
+                        results.1,
+                        results.2,
+                        results.3.to_owned(),
+                        current_user_count,
+                    )
+                } else {
+                    (
+                        max,
+                        min,
+                        total_chans_of_all_users,
+                        unique_channels_joined,
+                        current_user_count,
+                    )
+                }
+            },
+        );
+
+        ChannelsInfo {
+            max_channels_user_has: max_channels,
+            min_channels_user_has: min_channles,
+            avg_channels_per_user: (total_chans_of_all_users as f64) / (user_ready_count as f64),
+            user_ready_count,
+            unique_channels_joined: unique_channels_joined.len(),
+            sum_of_all_channels_joined_by_users: total_chans_of_all_users,
+        }
     }
 
     async fn cool_down(&self, tx: &Sender<Event>) {
@@ -190,13 +272,13 @@ impl Simulation {
         self.progress.tick(syncing as u64);
     }
 
-    async fn store_report(&self, report: &Report) {
+    async fn store_report(&self, report: &Report, channels_info: Option<ChannelsInfo>) {
         let output_folder = self.config.simulation.output.as_str();
         let homeserver = self.config.server.homeserver.as_str();
 
         let output_dir = format!("{output_folder}/{homeserver}");
 
-        report.generate(output_dir.as_str(), &execution_id());
+        report.generate(output_dir.as_str(), &execution_id(), channels_info);
     }
 
     async fn get_syncing_users(&self) -> Vec<OwnedUserId> {

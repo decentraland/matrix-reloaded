@@ -1,5 +1,6 @@
 use crate::events::MessageTimes;
 use crate::events::UserRequest;
+use crate::simulation::ChannelsInfo;
 use matrix_sdk::ruma::api::client::uiaa::UiaaResponse;
 use matrix_sdk::ruma::api::error::*;
 use matrix_sdk::HttpError;
@@ -196,7 +197,12 @@ impl Report {
         )
     }
 
-    pub fn generate(&self, output_dir: &str, execution_id: &str) {
+    pub fn generate(
+        &self,
+        output_dir: &str,
+        execution_id: &str,
+        channels_info: Option<ChannelsInfo>,
+    ) {
         let reports_dir = Self::ensure_execution_directory(output_dir, execution_id);
 
         let path = format!("{reports_dir}/report_{execution_id}.yaml");
@@ -206,6 +212,9 @@ impl Report {
 
         println!("Final report generated: {}\n", path);
         println!("{:#?}\n", self);
+        if let Some(channels_info) = channels_info {
+            println!("{:#?}\n", channels_info);
+        }
     }
 
     fn compute_reports_dir(output_dir: &str, execution_id: &str) -> String {
