@@ -578,16 +578,17 @@ async fn on_room_message(
                 return;
             }
 
-            log::debug!(
-                "Message received! next time user {} will have someone to respond :D",
-                user_id
-            );
-
             let message_type = if is_channel(&room) {
                 RoomType::Channel
             } else {
                 RoomType::DirectMessage
             };
+
+            log::debug!(
+                "Message {:?} received! next time user {} will have someone to respond :D",
+                message_type,
+                user_id
+            );
 
             sender
                 .send(SyncEvent::MessageReceived(
