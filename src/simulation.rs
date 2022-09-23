@@ -112,6 +112,7 @@ impl Simulation {
         let event_collector = EventCollector::new();
         let events_report = event_collector.start(rx);
 
+        // channel used to allow each user to notify the simulation process
         let (user_notification_sender, user_notification_receiver) =
             mpsc::channel::<UserNotifications>(100);
 
@@ -140,6 +141,45 @@ impl Simulation {
 
         // wait for report response
         let final_report = events_report.await.expect("events collection to end");
+
+        let ready_users = self.entities.values().filter_map(|entity| {
+            if let Entity::Ready { user } = entity {
+                Some(user)
+            } else {
+                None
+            }
+        });
+
+        let channel_stats = ready_users.clone().fold(
+            (0, usize::MAX, 0, HashSet::new()),
+            |(max, min, total_chans_of_users, mut channels_created), user| {
+                let u = user.try_read();
+
+                if let Ok(u) = u {
+                    log::debug!("getting user {} channel stats", u.localpart);
+                    let results = u.get_user_channels_stats((
+                        max,
+                        min,
+                        total_chans_of_users,
+                        &mut channels_created,
+                    ));
+                    log::debug!("channel stats - user {} - {:?}", u.localpart, results);
+                    (results.0, results.1, results.2, results.3.to_owned())
+                } else {
+                    (max, min, total_chans_of_users, channels_created)
+                }
+            },
+        );
+        let count = ready_users.count();
+        println!("CHANNEL STATS - ready users count: {}", count);
+        println!(
+            "CHANNELS STATS - max: {}, min: {}, total: {}, avg: {}, total created: {}",
+            channel_stats.0,
+            channel_stats.1,
+            channel_stats.2,
+            (channel_stats.2) as f64 / (count) as f64,
+            channel_stats.3.len()
+        );
 
         self.store_report(&final_report).await;
     }
