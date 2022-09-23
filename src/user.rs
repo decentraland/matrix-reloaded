@@ -122,6 +122,53 @@ impl User {
         self.client.user_id().await
     }
 
+    pub fn get_user_channels_stats<'a>(
+        &'a self,
+        (max, min, total_chans_joined_by_users, channels_created): (
+            usize,
+            usize,
+            usize,
+            &'a mut HashSet<OwnedRoomId>,
+        ),
+    ) -> (usize, usize, usize, &HashSet<OwnedRoomId>) {
+        let mut current_max: usize = max;
+        let mut current_min: usize = min;
+        let mut current_total: usize = total_chans_joined_by_users;
+
+        if let State::Sync { rooms, .. } = &self.state {
+            let rooms = rooms.try_read();
+            if let Ok(rooms) = rooms {
+                if !rooms.is_empty() {
+                    let rooms_channels = rooms
+                        .iter()
+                        .filter(|room| matches!(room.1, RoomType::Channel))
+                        .collect::<Vec<_>>();
+
+                    let current_chans = rooms_channels.len();
+                    log::debug!(
+                        "get_user_channels_stats: current chans for user {}:  {}",
+                        self.localpart,
+                        current_chans
+                    );
+                    if current_chans > max {
+                        current_max = current_chans
+                    }
+
+                    if current_chans < min {
+                        current_min = current_chans
+                    }
+
+                    current_total += current_chans;
+
+                    for room in rooms_channels {
+                        channels_created.insert(room.0.clone());
+                    }
+                }
+            }
+        }
+        (current_max, current_min, current_total, channels_created)
+    }
+
     async fn sync(&mut self, config: &Config, user_notifier: &UserNotificationsSender) {
         log::debug!("user '{}' act => {}", self.localpart, "SYNC");
         match self.client.sync(user_notifier).await {
@@ -536,7 +583,13 @@ fn pick_random_action(
 ) -> SocialAction {
     let mut rng = rand::thread_rng();
     if rng.gen_ratio(probability_to_act as u32, 100) {
-        if rng.gen_ratio(1, 75) {
+        if rng.gen_ratio(1, 3) {
+            SocialAction::SendMessage(RoomType::DirectMessage)
+        } else if channels_enabled && rng.gen_ratio(1, 5) {
+            SocialAction::SendMessage(RoomType::Channel)
+        } else if rng.gen_ratio(1, 3) {
+            SocialAction::AddFriend
+        } else if rng.gen_ratio(1, 75) {
             SocialAction::LogOut
         } else if channels_enabled && rng.gen_ratio(1, 70) {
             SocialAction::LeaveChannel
@@ -548,10 +601,6 @@ fn pick_random_action(
             SocialAction::JoinChannel
         } else if rng.gen_ratio(1, 25) {
             SocialAction::UpdateStatus
-        } else if rng.gen_ratio(1, 3) {
-            SocialAction::AddFriend
-        } else if channels_enabled && rng.gen_ratio(1, 5) {
-            SocialAction::SendMessage(RoomType::Channel)
         } else {
             SocialAction::SendMessage(RoomType::DirectMessage)
         }
