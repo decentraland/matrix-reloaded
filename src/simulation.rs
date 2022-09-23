@@ -173,11 +173,11 @@ impl Simulation {
         let count = ready_users.count();
         println!("CHANNEL STATS - ready users count: {}", count);
         println!(
-            "CHANNELS STATS - max: {}, min: {}, total: {}, avg: {}, total created: {}",
+            "CHANNELS STATS - \n max number user joined: {} \n  min number user joined : {} \n avg joined channel: {} \n total joined: {} \n total created: {}",
             channel_stats.0,
             channel_stats.1,
-            channel_stats.2,
             (channel_stats.2) as f64 / (count) as f64,
+            channel_stats.2,
             channel_stats.3.len()
         );
 
