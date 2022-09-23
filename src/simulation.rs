@@ -164,7 +164,7 @@ impl Simulation {
     }
 
     fn get_ready_entities(&self) -> impl Iterator<Item = &Arc<RwLock<User>>> {
-        self.entities.values().filter_map(|entity| {
+        return self.entities.values().filter_map(|entity| {
             if let Entity::Ready { user } = entity {
                 Some(user)
             } else {
