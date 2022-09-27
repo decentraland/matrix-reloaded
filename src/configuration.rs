@@ -73,6 +73,7 @@ pub struct InteractionRatios {
     pub join_channel: u32,
     pub update_status: u32,
     pub add_friend: u32,
+    pub send_direct_message: u32,
     pub send_channel_message: u32,
 }
 
