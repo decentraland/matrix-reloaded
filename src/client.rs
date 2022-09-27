@@ -257,18 +257,23 @@ impl Client {
     ///
     /// If room_id is not one of the joined rooms or couldn't retrieve it.
     ///
-    pub async fn send_message(&self, room_id: &RoomId, message: String) {
+    pub async fn send_message(&self, room_id: &RoomId, message: String, room_type: RoomType) {
         let client = &self.inner;
 
         let content =
             AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(message));
+
+        let user_request_type = match room_type {
+            RoomType::Channel => UserRequest::SendMessageInChannel,
+            RoomType::DirectMessage => UserRequest::SendMessageInDM,
+        };
 
         let room = client
             .get_joined_room(room_id)
             .unwrap_or_else(|| panic!("cannot get joined room {}", room_id));
 
         let response = self
-            .instrument(UserRequest::SendMessage, || async {
+            .instrument(user_request_type.clone(), || async {
                 room.send(content, None).await
             })
             .await;
@@ -279,7 +284,7 @@ impl Client {
                 self.notify_event(event).await;
             }
             Err(Http(e)) => {
-                self.notify_error(UserRequest::SendMessage, e).await;
+                self.notify_error(user_request_type, e).await;
             }
             _ => {}
         }
@@ -346,7 +351,11 @@ impl Client {
         allow_get_channel_members: bool,
     ) {
         let request = JoinRoomRequest::new(room_id);
-        self.send_and_notify(request, UserRequest::JoinRoom).await;
+        let user_request_event = match room_type {
+            RoomType::Channel => UserRequest::JoinChannelRoom,
+            RoomType::DirectMessage => UserRequest::JoinDirectRoom,
+        };
+        self.send_and_notify(request, user_request_event).await;
         if allow_get_channel_members {
             if let RoomType::Channel = room_type {
                 self.notify_sync(SyncEvent::GetChannelMembers(room_id.to_owned()))
