@@ -595,11 +595,10 @@ fn pick_random_action(
     let mut rng = rand::thread_rng();
     if let Some(interaction_ratios) = interaction_ratios {
         if rng.gen_ratio(probability_to_act as u32, 100) {
-            if rng.gen_ratio(1, interaction_ratios.send_direct_message) {
-                SocialAction::SendMessage(RoomType::DirectMessage)
-            } else if channels_enabled && rng.gen_ratio(1, interaction_ratios.send_channel_message)
-            {
+            if channels_enabled && rng.gen_ratio(1, interaction_ratios.send_channel_message) {
                 SocialAction::SendMessage(RoomType::Channel)
+            } else if rng.gen_ratio(1, interaction_ratios.send_direct_message) {
+                SocialAction::SendMessage(RoomType::DirectMessage)
             } else if rng.gen_ratio(1, interaction_ratios.add_friend) {
                 SocialAction::AddFriend
             } else if rng.gen_ratio(1, interaction_ratios.log_out) {
