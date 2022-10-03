@@ -148,10 +148,10 @@ impl Client {
     }
 
     pub async fn login(&self, localpart: &str) -> LoginResult {
+        let login_builder = self.inner.login_username(localpart, PASSWORD);
+
         let response = self
-            .instrument(UserRequest::Login, || async {
-                self.inner.login(localpart, PASSWORD, None, None).await
-            })
+            .instrument(UserRequest::Login, || async { login_builder.send().await })
             .await;
 
         match response {
@@ -195,14 +195,14 @@ impl Client {
         }
     }
 
-    pub async fn user_id(&self) -> Option<OwnedUserId> {
-        self.inner.user_id().await
+    pub fn user_id(&self) -> Option<OwnedUserId> {
+        self.inner.user_id().map(|user_id| user_id.to_owned())
     }
 
     /// Do initial sync and return rooms and new invites. Then register event handler for future syncs and notify events.
     pub async fn sync(&self, user_notifier: &UserNotificationsSender) -> SyncResult {
         let client = &self.inner;
-        let user_id = self.user_id().await.expect("user_id to be present");
+        let user_id = self.user_id().expect("user_id to be present");
         let response = self
             .instrument(UserRequest::InitialSync, || async {
                 client.sync_once(SyncSettings::default()).await
@@ -288,8 +288,8 @@ impl Client {
     pub async fn add_friend(&self, friend_id: &UserId) {
         let client = &self.inner;
         // try to create room (maybe it already exists, in that case we ignore that)
-        let user_id = client.user_id().await.expect("user id should be present");
-        let alias = get_room_alias(&user_id, friend_id);
+        let user_id = client.user_id().expect("user id should be present");
+        let alias = get_room_alias(user_id, friend_id);
         let invites = [friend_id.to_owned()];
         let request = assign!(CreateRoomRequest::new(), { room_alias_name: Some(&alias), invite: &invites, is_direct: true, preset: Some(RoomPreset::TrustedPrivateChat) });
         let response = self
@@ -376,7 +376,7 @@ impl Client {
     }
 
     pub async fn update_status(&self) {
-        let user_id = self.user_id().await.expect("user_id to be present");
+        let user_id = self.user_id().expect("user_id to be present");
         let random_status_msg = get_random_string();
         let update_presence = assign!(UpdatePresenceRequest::new(&user_id, PresenceState::Online), { status_msg: Some(random_status_msg.as_str())});
         self.send_and_notify(update_presence, UserRequest::UpdateStatus)
@@ -384,7 +384,7 @@ impl Client {
     }
 
     pub async fn read_messages(&self, room_id: OwnedRoomId) {
-        let messages_request = MessagesRequest::from_start(&room_id);
+        let messages_request = MessagesRequest::forward(&room_id);
         self.send_and_notify(messages_request, UserRequest::Messages)
             .await;
     }
@@ -446,7 +446,7 @@ async fn sync_until_cancel(
     // client state is held in an `Arc` so the `Client` can be cloned freely.
     let client = client.clone();
     async move {
-        client
+        match client
             .sync_with_callback(SyncSettings::default(), {
                 let check_cancel = check_cancel.clone();
                 move |_| {
@@ -460,7 +460,11 @@ async fn sync_until_cancel(
                     }
                 }
             })
-            .await;
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => log::debug!("error while syncing an user - {:?}", err),
+        }
     }
 }
 
@@ -470,21 +474,19 @@ async fn add_room_message_event_handler(
     user_id: &UserId,
     notifier: &SyncEventsSender,
 ) {
-    client
-        .register_event_handler({
+    client.add_event_handler({
+        let tx = tx.clone();
+        let user_id = user_id.to_owned();
+        let notifier = notifier.clone();
+        move |event, room| {
             let tx = tx.clone();
-            let user_id = user_id.to_owned();
+            let user_id = user_id.clone();
             let notifier = notifier.clone();
-            move |event, room| {
-                let tx = tx.clone();
-                let user_id = user_id.clone();
-                let notifier = notifier.clone();
-                async move {
-                    on_room_message(event, room, tx, user_id, &notifier).await;
-                }
+            async move {
+                on_room_message(event, room, tx, user_id, &notifier).await;
             }
-        })
-        .await;
+        }
+    });
 }
 
 async fn add_invite_event_handler(
@@ -492,19 +494,17 @@ async fn add_invite_event_handler(
     tx: &Sender<SyncEvent>,
     user_id: &UserId,
 ) {
-    client
-        .register_event_handler({
+    client.add_event_handler({
+        let tx = tx.clone();
+        let user_id = user_id.to_owned();
+        move |event, room| {
             let tx = tx.clone();
-            let user_id = user_id.to_owned();
-            move |event, room| {
-                let tx = tx.clone();
-                let user_id = user_id.clone();
-                async move {
-                    on_room_member_event(event, room, tx, user_id).await;
-                }
+            let user_id = user_id.clone();
+            async move {
+                on_room_member_event(event, room, tx, user_id).await;
             }
-        })
-        .await;
+        }
+    });
 }
 
 async fn add_room_join_rules_event_handler(
@@ -512,19 +512,17 @@ async fn add_room_join_rules_event_handler(
     user_notifier: &UserNotificationsSender,
     tx: &Sender<SyncEvent>,
 ) {
-    client
-        .register_event_handler({
+    client.add_event_handler({
+        let user_notifier = user_notifier.clone();
+        let tx = tx.clone();
+        move |_event: OriginalSyncRoomJoinRulesEvent, room: Room| {
             let user_notifier = user_notifier.clone();
             let tx = tx.clone();
-            move |_event: OriginalSyncRoomJoinRulesEvent, room: Room| {
-                let user_notifier = user_notifier.clone();
-                let tx = tx.clone();
-                async move {
-                    on_room_join_rules(room, user_notifier, tx).await;
-                }
+            async move {
+                on_room_join_rules(room, user_notifier, tx).await;
             }
-        })
-        .await;
+        }
+    });
 }
 
 async fn on_room_join_rules(
