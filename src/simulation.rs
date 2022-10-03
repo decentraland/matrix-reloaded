@@ -288,7 +288,7 @@ impl Simulation {
             if let Entity::Ready { user } = entity {
                 if let Ok(user) = user.try_read() {
                     if let State::Sync { .. } = user.state {
-                        let user_id = user.id().expect("user_id to be present");
+                        let user_id = user.id().expect("user_id to be present").to_owned();
                         online_users.push(user_id);
                     }
                 }

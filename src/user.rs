@@ -12,7 +12,7 @@ use crate::text::get_random_string;
 use async_channel::Sender;
 use futures::lock::Mutex;
 use matrix_sdk::locks::RwLock;
-use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
+use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId, UserId};
 use rand::distributions::Alphanumeric;
 use rand::prelude::SliceRandom;
 use rand::rngs::StdRng;
@@ -118,7 +118,7 @@ impl User {
         }
     }
 
-    pub fn id(&self) -> Option<OwnedUserId> {
+    pub fn id(&self) -> Option<&UserId> {
         self.client.user_id()
     }
 
@@ -223,7 +223,7 @@ impl User {
                 let user_id = self.id();
                 if let Some(user_id) = user_id {
                     user_notifier
-                        .send(UserNotifications::NewSyncedUser(user_id.clone()))
+                        .send(UserNotifications::NewSyncedUser(user_id.to_owned()))
                         .await
                         .expect("channel to be open");
 
@@ -543,7 +543,7 @@ impl User {
         let user_id = self.id();
         if let Some(user_id) = user_id {
             user_notifier
-                .send(UserNotifications::UserLoggedOut(user_id))
+                .send(UserNotifications::UserLoggedOut(user_id.to_owned()))
                 .await
                 .expect("channel to be open");
         } else {

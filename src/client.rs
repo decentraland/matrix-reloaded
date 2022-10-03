@@ -195,8 +195,8 @@ impl Client {
         }
     }
 
-    pub fn user_id(&self) -> Option<OwnedUserId> {
-        self.inner.user_id().map(|user_id| user_id.to_owned())
+    pub fn user_id(&self) -> Option<&UserId> {
+        self.inner.user_id()
     }
 
     /// Do initial sync and return rooms and new invites. Then register event handler for future syncs and notify events.
@@ -229,8 +229,8 @@ impl Client {
             Ok(_) => {
                 let (tx, _) = &self.sync_channel;
 
-                add_invite_event_handler(client, tx, &user_id).await;
-                add_room_message_event_handler(client, tx, &user_id, &self.event_notifier).await;
+                add_invite_event_handler(client, tx, user_id).await;
+                add_room_message_event_handler(client, tx, user_id, &self.event_notifier).await;
                 add_room_join_rules_event_handler(client, user_notifier, tx).await;
 
                 let (cancel_sync, check_cancel) = async_channel::bounded::<bool>(1);
@@ -389,7 +389,7 @@ impl Client {
     pub async fn update_status(&self) {
         let user_id = self.user_id().expect("user_id to be present");
         let random_status_msg = get_random_string();
-        let update_presence = assign!(UpdatePresenceRequest::new(&user_id, PresenceState::Online), { status_msg: Some(random_status_msg.as_str())});
+        let update_presence = assign!(UpdatePresenceRequest::new(user_id, PresenceState::Online), { status_msg: Some(random_status_msg.as_str())});
         self.send_and_notify(update_presence, UserRequest::UpdateStatus)
             .await;
     }
