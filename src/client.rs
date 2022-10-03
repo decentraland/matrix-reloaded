@@ -200,12 +200,23 @@ impl Client {
     }
 
     /// Do initial sync and return rooms and new invites. Then register event handler for future syncs and notify events.
-    pub async fn sync(&self, user_notifier: &UserNotificationsSender) -> SyncResult {
+    pub async fn sync(
+        &self,
+        user_notifier: &UserNotificationsSender,
+        presence_enabled: bool,
+    ) -> SyncResult {
         let client = &self.inner;
         let user_id = self.user_id().expect("user_id to be present");
+        let user_presence = if presence_enabled {
+            PresenceState::Online
+        } else {
+            PresenceState::Offline
+        };
         let response = self
             .instrument(UserRequest::InitialSync, || async {
-                client.sync_once(SyncSettings::default()).await
+                client
+                    .sync_once(SyncSettings::default().set_presence(user_presence))
+                    .await
             })
             .await;
         match response {

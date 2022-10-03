@@ -118,8 +118,8 @@ impl User {
         }
     }
 
-    pub async fn id(&self) -> Option<OwnedUserId> {
-        self.client.user_id().await
+    pub fn id(&self) -> Option<OwnedUserId> {
+        self.client.user_id()
     }
 
     pub fn get_user_channels_stats<'a>(
@@ -171,7 +171,11 @@ impl User {
 
     async fn sync(&mut self, config: &Config, user_notifier: &UserNotificationsSender) {
         log::debug!("user '{}' act => {}", self.localpart, "SYNC");
-        match self.client.sync(user_notifier).await {
+        match self
+            .client
+            .sync(user_notifier, config.feature_flags.presence_enabled)
+            .await
+        {
             SyncResult::Ok {
                 rooms,
                 invited_rooms,
@@ -216,7 +220,7 @@ impl User {
                     cancel_sync,
                     ticks_to_live,
                 };
-                let user_id = self.id().await;
+                let user_id = self.id();
                 if let Some(user_id) = user_id {
                     user_notifier
                         .send(UserNotifications::NewSyncedUser(user_id.clone()))
@@ -291,8 +295,8 @@ impl User {
                 } else {
                     match pick_random_action(
                         context.config.simulation.probability_to_act,
-                        context.config.simulation.channels_load,
-                        context.config.simulation.allow_get_channel_members,
+                        context.config.feature_flags.channels_load,
+                        context.config.feature_flags.allow_get_channel_members,
                     ) {
                         SocialAction::SendMessage(message_type) => match message_type {
                             RoomType::DirectMessage => {
@@ -361,7 +365,7 @@ impl User {
         match event {
             SyncEvent::Invite(room_id) => self.join(&room_id, RoomType::DirectMessage, false).await,
             SyncEvent::MessageReceived(room_id, _, message_type) => {
-                if RoomType::Channel == message_type && !ctx.config.simulation.channels_load {
+                if RoomType::Channel == message_type && !ctx.config.feature_flags.channels_load {
                     log::debug!(
                         "user '{}' not responding because channels are disabled",
                         self.localpart
@@ -447,7 +451,7 @@ impl User {
             self.join(
                 &room_id,
                 RoomType::Channel,
-                context.config.simulation.allow_get_channel_members,
+                context.config.feature_flags.allow_get_channel_members,
             )
             .await;
         } else {
@@ -536,7 +540,7 @@ impl User {
         cancel_sync.send(true).await.expect("channel open");
         self.state = State::LoggedOut;
         self.localpart += "_";
-        let user_id = self.id().await;
+        let user_id = self.id();
         if let Some(user_id) = user_id {
             user_notifier
                 .send(UserNotifications::UserLoggedOut(user_id))
