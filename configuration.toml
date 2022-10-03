@@ -13,5 +13,10 @@ channels_per_user = 5
 channels_load = true
 allow_get_channel_members = false
 
+[feature_flags]
+channels_load = true
+allow_get_channel_members = false
+presence_enabled = false
+
 [requests]
 retry_enabled = true

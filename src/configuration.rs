@@ -80,9 +80,7 @@ pub struct Simulation {
     pub execution_id: String,
     pub probability_to_act: usize,
     pub probability_for_short_lifes: usize,
-    pub channels_load: bool,
     pub channels_per_user: usize,
-    pub allow_get_channel_members: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -95,6 +93,14 @@ pub struct Config {
     pub server: Server,
     pub simulation: Simulation,
     pub requests: Requests,
+    pub feature_flags: FeatureFlags,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct FeatureFlags {
+    pub channels_load: bool,
+    pub allow_get_channel_members: bool,
+    pub presence_enabled: bool,
 }
 
 impl Config {
@@ -119,8 +125,9 @@ impl Config {
                 "simulation.probability_for_short_lifes",
                 args.probability_for_short_lifes,
             )?
-            .set_default("simulation.channels_load", true)?
-            .set_default("simulation.allow_get_channel_members", false)?
+            .set_default("feature_flags.channels_load", true)?
+            .set_default("feature_flags.allow_get_channel_members", false)?
+            .set_default("feature_flags.presence_enabled", true)?
             .build()?;
 
         log::debug!("Config: {:#?}", config);
