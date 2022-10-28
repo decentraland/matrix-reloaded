@@ -114,6 +114,7 @@ impl Simulation {
     pub async fn run(&mut self) {
         println!("server: {:#?}", self.config.server);
         println!("simulation config: {:#?}", self.config.simulation);
+        println!("feature flags config: {:#?}", self.config.feature_flags);
 
         self.progress.start();
         // channel used to share events from users to the Event Collector
@@ -155,7 +156,7 @@ impl Simulation {
 
         // collect channels info
         let mut channels_info: Option<ChannelsInfo> = None;
-        if context.config.simulation.channels_load {
+        if context.config.feature_flags.channels_load {
             let collect = self.get_channels_info();
             channels_info = Some(collect);
         }
@@ -287,7 +288,7 @@ impl Simulation {
             if let Entity::Ready { user } = entity {
                 if let Ok(user) = user.try_read() {
                     if let State::Sync { .. } = user.state {
-                        let user_id = user.id().await.expect("user_id to be present");
+                        let user_id = user.id().expect("user_id to be present").to_owned();
                         online_users.push(user_id);
                     }
                 }
