@@ -366,14 +366,20 @@ impl Client {
         }
     }
 
-    pub async fn join_channel(&self, channel_alias: String, server_name: String) {
-        log::debug!("join_channel by alias {}", channel_alias);
+    pub async fn join_channel(&self, channel_name: String) {
         let client = &self.inner;
-        let channel_alias = format!("#{channel_alias}:{server_name}");
-        let room_alias =
-            <&RoomOrAliasId>::try_from(channel_alias.as_str()).unwrap();
-        let server_name = <&ServerName>::try_from(server_name.as_str()).unwrap();
-        client.join_room_by_id_or_alias(room_alias, &[server_name.into()]).await;
+        let user_homeserver = self.user_id().unwrap().server_name();
+        let channel_alias = format!("#{channel_name}:{user_homeserver}");
+        let room_alias = <&RoomOrAliasId>::try_from(channel_alias.as_str()).unwrap();
+
+        log::debug!("join_channel by alias {}", room_alias);
+        let result = client
+            .join_room_by_id_or_alias(room_alias, &[user_homeserver.into()])
+            .await;
+
+        if let Err(err) = result {
+            log::debug!("Failed to join channel! {:?}", err);
+        }
     }
 
     pub async fn get_channel_members(&self, room_id: &RoomId) {

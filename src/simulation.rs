@@ -128,6 +128,7 @@ impl Simulation {
         println!("server: {:#?}", self.config.server);
         println!("simulation config: {:#?}", self.config.simulation);
         println!("feature flags config: {:#?}", self.config.feature_flags);
+        println!("action weights config: {:?}", self.config.action_weights);
 
         self.progress.start();
         // channel used to share events from users to the Event Collector
