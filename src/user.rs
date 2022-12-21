@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
-use crate::configuration::Config;
+use crate::configuration::{ActionWeights, Config};
 use crate::events::{SyncEvent, SyncEventsSender, UserNotifications, UserNotificationsSender};
 use crate::room::RoomType;
 use crate::simulation::Context;
@@ -13,8 +13,8 @@ use async_channel::Sender;
 use futures::lock::Mutex;
 use matrix_sdk::locks::RwLock;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId, UserId};
-use rand::distributions::Alphanumeric;
-use rand::prelude::SliceRandom;
+use rand::distributions::{Alphanumeric, WeightedIndex};
+use rand::prelude::{Distribution, SliceRandom};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom;
 use rand::Rng;
@@ -305,10 +305,11 @@ impl User {
                     self.log_out(cancel_sync.clone(), &context.user_notifier)
                         .await;
                 } else {
-                    match pick_random_action(
+                    match pick_action(
                         context.config.simulation.probability_to_act,
                         context.config.feature_flags.channels_load,
                         context.config.feature_flags.allow_get_channel_members,
+                        &context.config.action_weights,
                     ) {
                         SocialAction::SendMessage(message_type) => match message_type {
                             RoomType::DirectMessage => {
@@ -598,33 +599,37 @@ fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
     format!("user_{id_number}_{execution_id}")
 }
 
-// we probably want to distribute these actions and don't make them random (more send messages than logouts)
-fn pick_random_action(
+// Picks an action using the distribution defined in the configuration
+fn pick_action(
     probability_to_act: usize,
     channels_enabled: bool,
     allow_get_channel_members: bool,
+    weights: &ActionWeights,
 ) -> SocialAction {
+    let mut actions = vec![];
+    actions.push((SocialAction::LogOut, weights.log_out));
+    if channels_enabled {
+        actions.push((SocialAction::LeaveChannel, weights.leave_channel));
+        actions.push((SocialAction::JoinChannel, weights.join_channel));
+        actions.push((SocialAction::CreateChannel, weights.create_channel));
+        if allow_get_channel_members {
+            actions.push((SocialAction::GetChannelMembers, weights.get_channel_members));
+        }
+        actions.push((
+            SocialAction::SendMessage(RoomType::Channel),
+            weights.send_channel_message,
+        ));
+    }
+    actions.push((SocialAction::AddFriend, weights.add_friend));
+    actions.push((SocialAction::UpdateStatus, weights.update_status));
+    actions.push((
+        SocialAction::SendMessage(RoomType::DirectMessage),
+        weights.send_dm_message,
+    ));
+    let dist = WeightedIndex::new(actions.iter().map(|item| item.1)).unwrap();
     let mut rng = rand::thread_rng();
     if rng.gen_ratio(probability_to_act as u32, 100) {
-        if rng.gen_ratio(1, 75) {
-            SocialAction::LogOut
-        } else if channels_enabled && rng.gen_ratio(1, 70) {
-            SocialAction::LeaveChannel
-        } else if channels_enabled && allow_get_channel_members && rng.gen_ratio(1, 60) {
-            SocialAction::GetChannelMembers
-        } else if channels_enabled && rng.gen_ratio(1, 50) {
-            SocialAction::CreateChannel
-        } else if channels_enabled && rng.gen_ratio(1, 35) {
-            SocialAction::JoinChannel
-        } else if rng.gen_ratio(1, 25) {
-            SocialAction::UpdateStatus
-        } else if rng.gen_ratio(1, 3) {
-            SocialAction::AddFriend
-        } else if channels_enabled && rng.gen_ratio(1, 5) {
-            SocialAction::SendMessage(RoomType::Channel)
-        } else {
-            SocialAction::SendMessage(RoomType::DirectMessage)
-        }
+        actions[dist.sample(&mut rng)].0.clone()
     } else {
         SocialAction::None
     }
