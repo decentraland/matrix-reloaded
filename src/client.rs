@@ -38,7 +38,7 @@ use matrix_sdk::ruma::{
         AnyMessageLikeEventContent,
     },
     presence::PresenceState,
-    OwnedRoomId, OwnedUserId, RoomId, UserId,
+    OwnedRoomId, OwnedUserId, RoomId, RoomOrAliasId, ServerName, UserId,
 };
 use matrix_sdk::{
     config::{RequestConfig, SyncSettings},
@@ -364,6 +364,16 @@ impl Client {
                     .await;
             }
         }
+    }
+
+    pub async fn join_channel(&self, channel_alias: String, server_name: String) {
+        log::debug!("join_channel by alias {}", channel_alias);
+        let client = &self.inner;
+        let channel_alias = format!("#{channel_alias}:{server_name}");
+        let room_alias =
+            <&RoomOrAliasId>::try_from(channel_alias.as_str()).unwrap();
+        let server_name = <&ServerName>::try_from(server_name.as_str()).unwrap();
+        client.join_room_by_id_or_alias(room_alias, &[server_name.into()]).await;
     }
 
     pub async fn get_channel_members(&self, room_id: &RoomId) {

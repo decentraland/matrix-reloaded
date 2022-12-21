@@ -392,6 +392,7 @@ impl User {
                 self.get_channel_members(room_id, SocialAction::GetChannelMembers)
                     .await
             }
+            SyncEvent::JoinChannel(channel_name) => self.join_channel_alias(channel_name, ctx.config.server.homeserver.clone()).await,
             _ => {}
         }
     }
@@ -472,6 +473,9 @@ impl User {
         }
     }
 
+    async fn join_channel_alias(&self, channel_name: String, server_name: String) {
+        self.client.join_channel(channel_name, server_name).await;
+    }
     async fn pick_channel(&self, context: &Context) -> Option<OwnedRoomId> {
         let room_type = RoomType::Channel;
         let user_channels = match &self.state {
