@@ -101,6 +101,7 @@ pub struct FeatureFlags {
     pub channels_load: bool,
     pub allow_get_channel_members: bool,
     pub presence_enabled: bool,
+    pub channels_to_join: Vec<String>,
 }
 
 impl Config {
@@ -128,6 +129,7 @@ impl Config {
             .set_default("feature_flags.channels_load", true)?
             .set_default("feature_flags.allow_get_channel_members", false)?
             .set_default("feature_flags.presence_enabled", true)?
+            .set_default::<&str, Vec<String>>("feature_flags.channels_to_join", vec![])?
             .build()?;
 
         log::debug!("Config: {:#?}", config);

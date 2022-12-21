@@ -24,9 +24,10 @@ pub struct User {
     pub localpart: String,
     client: Client,
     pub state: State,
+    prepare_actions: Vec<SyncEvent>, // actions to be processed before starting to act
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum SocialAction {
     AddFriend,
     SendMessage(RoomType),
@@ -54,7 +55,12 @@ pub enum State {
 }
 
 impl User {
-    pub async fn new(id_number: usize, notifier: SyncEventsSender, config: &Config) -> Self {
+    pub async fn new(
+        id_number: usize,
+        notifier: SyncEventsSender,
+        config: &Config,
+        prepare_actions: Vec<SyncEvent>,
+    ) -> Self {
         let localpart = get_user_id_localpart(id_number, &config.simulation.execution_id);
 
         let client = Client::new(notifier, config).await;
@@ -62,6 +68,7 @@ impl User {
             localpart,
             client,
             state: State::Unregistered,
+            prepare_actions,
         }
     }
 
@@ -279,6 +286,11 @@ impl User {
             ticks_to_live,
         } = &self.state
         {
+            // Before socialize, ensure there are no pending actions
+            if let Some(action) = self.prepare_actions.pop() {
+                self.react(action, context).await;
+                return;
+            }
             self.read_sync_events(events).await;
             let mut events = events.lock().await;
             if let Some(event) = events.pop() {
@@ -376,7 +388,7 @@ impl User {
             }
             SyncEvent::UnreadRoom(room_id) => self.read_messages(room_id).await,
             SyncEvent::GetChannelMembers(room_id) => {
-                self.get_channel_members(room_id, SocialAction::JoinChannel)
+                self.get_channel_members(room_id, SocialAction::GetChannelMembers)
                     .await
             }
             _ => {}

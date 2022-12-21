@@ -15,6 +15,7 @@ channels_per_user = 5
 channels_load = true
 allow_get_channel_members = false
 presence_enabled = false
+channels_to_join = ["help", "test2010"]
 
 [requests]
 retry_enabled = true

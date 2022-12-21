@@ -1,6 +1,7 @@
 use crate::configuration::Config;
 use crate::events::Event;
 use crate::events::EventCollector;
+use crate::events::SyncEvent;
 use crate::events::UserNotifications;
 use crate::progress::create_progress;
 use crate::progress::Progress;
@@ -41,6 +42,7 @@ pub struct Context {
     notifier: Sender<Event>,
     pub user_notifier: Sender<UserNotifications>,
     pub channels: RwLock<HashSet<OwnedRoomId>>, // public channels created by all users
+    pub join_to_channels: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -69,7 +71,18 @@ impl Entity {
         match &self {
             Entity::Waiting { id } => {
                 log::debug!(" --- waking up entity {}", id);
-                let user = User::new(*id, context.notifier.clone(), &context.config).await;
+                let prepare_actions = context
+                    .join_to_channels
+                    .iter()
+                    .map(|channel_alias| SyncEvent::JoinChannel(channel_alias.to_string()))
+                    .collect();
+                let user = User::new(
+                    *id,
+                    context.notifier.clone(),
+                    &context.config,
+                    prepare_actions,
+                )
+                .await;
                 EntityAction::WakeUp(user)
             }
             Entity::Ready { user } => {
@@ -134,6 +147,7 @@ impl Simulation {
             notifier: tx.clone(),
             user_notifier: user_notification_sender.clone(),
             channels: RwLock::new(HashSet::new()),
+            join_to_channels: self.config.feature_flags.channels_to_join.to_vec(),
         });
 
         tokio::spawn(Simulation::collect_user_notifications(
