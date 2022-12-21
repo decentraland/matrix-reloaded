@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::client::{Client, RegisterResult};
 use crate::client::{LoginResult, SyncResult};
-use crate::configuration::{ActionWeights, Config};
+use crate::configuration::Config;
 use crate::events::{SyncEvent, SyncEventsSender, UserNotifications, UserNotificationsSender};
 use crate::room::RoomType;
 use crate::simulation::Context;
@@ -28,7 +28,7 @@ pub struct User {
 }
 
 #[derive(Debug, Clone)]
-enum SocialAction {
+pub enum SocialAction {
     AddFriend,
     SendMessage(RoomType),
     LogOut,
@@ -307,9 +307,7 @@ impl User {
                 } else {
                     match pick_action(
                         context.config.simulation.probability_to_act,
-                        context.config.feature_flags.channels_load,
-                        context.config.feature_flags.allow_get_channel_members,
-                        &context.config.action_weights,
+                        &context.actions_dist,
                     ) {
                         SocialAction::SendMessage(message_type) => match message_type {
                             RoomType::DirectMessage => {
@@ -605,32 +603,7 @@ fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
 }
 
 // Picks an action using the distribution defined in the configuration
-fn pick_action(
-    probability_to_act: usize,
-    channels_enabled: bool,
-    allow_get_channel_members: bool,
-    weights: &ActionWeights,
-) -> SocialAction {
-    let mut actions = vec![];
-    actions.push((SocialAction::LogOut, weights.log_out));
-    if channels_enabled {
-        actions.push((SocialAction::LeaveChannel, weights.leave_channel));
-        actions.push((SocialAction::JoinChannel, weights.join_channel));
-        actions.push((SocialAction::CreateChannel, weights.create_channel));
-        if allow_get_channel_members {
-            actions.push((SocialAction::GetChannelMembers, weights.get_channel_members));
-        }
-        actions.push((
-            SocialAction::SendMessage(RoomType::Channel),
-            weights.send_channel_message,
-        ));
-    }
-    actions.push((SocialAction::AddFriend, weights.add_friend));
-    actions.push((SocialAction::UpdateStatus, weights.update_status));
-    actions.push((
-        SocialAction::SendMessage(RoomType::DirectMessage),
-        weights.send_dm_message,
-    ));
+fn pick_action(probability_to_act: usize, actions: &[(SocialAction, usize)]) -> SocialAction {
     let dist = WeightedIndex::new(actions.iter().map(|item| item.1)).unwrap();
     let mut rng = rand::thread_rng();
     if rng.gen_ratio(probability_to_act as u32, 100) {

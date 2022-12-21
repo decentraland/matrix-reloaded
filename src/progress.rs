@@ -126,7 +126,7 @@ impl Progress for QuietProgress {
 pub fn create_progress(ticks: usize, max_users: usize) -> Box<dyn Progress> {
     let is_ci = env::var("CI").is_ok();
     match is_ci {
-        true => Box::new(QuietProgress::default()),
+        true => Box::<QuietProgress>::default(),
         false => Box::new(SimulationProgress::new(ticks, max_users)),
     }
 }

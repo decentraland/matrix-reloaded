@@ -38,7 +38,7 @@ use matrix_sdk::ruma::{
         AnyMessageLikeEventContent,
     },
     presence::PresenceState,
-    OwnedRoomId, OwnedUserId, RoomId, RoomOrAliasId, ServerName, UserId,
+    OwnedRoomId, OwnedUserId, RoomId, RoomOrAliasId, UserId,
 };
 use matrix_sdk::{
     config::{RequestConfig, SyncSettings},

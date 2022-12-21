@@ -6,9 +6,11 @@ use crate::events::UserNotifications;
 use crate::progress::create_progress;
 use crate::progress::Progress;
 use crate::report::Report;
+use crate::room::RoomType;
 use crate::text::default_spinner;
 use crate::text::spin_for;
 use crate::time::execution_id;
+use crate::user::SocialAction;
 use crate::user::State;
 use crate::user::User;
 use futures::future::join_all;
@@ -43,6 +45,7 @@ pub struct Context {
     pub user_notifier: Sender<UserNotifications>,
     pub channels: RwLock<HashSet<OwnedRoomId>>, // public channels created by all users
     pub join_to_channels: Vec<String>,
+    pub actions_dist: Vec<(SocialAction, usize)>,
 }
 
 #[derive(Debug)]
@@ -124,6 +127,33 @@ impl Simulation {
         }
     }
 
+    fn build_actions_dist(&self) -> Vec<(SocialAction, usize)> {
+        let weights = &self.config.action_weights;
+        let channels_enabled = self.config.feature_flags.channels_load;
+
+        let mut actions = vec![];
+        actions.push((SocialAction::LogOut, weights.log_out));
+        if channels_enabled {
+            actions.push((SocialAction::LeaveChannel, weights.leave_channel));
+            actions.push((SocialAction::JoinChannel, weights.join_channel));
+            actions.push((SocialAction::CreateChannel, weights.create_channel));
+            if self.config.feature_flags.allow_get_channel_members {
+                actions.push((SocialAction::GetChannelMembers, weights.get_channel_members));
+            }
+            actions.push((
+                SocialAction::SendMessage(RoomType::Channel),
+                weights.send_channel_message,
+            ));
+        }
+        actions.push((SocialAction::AddFriend, weights.add_friend));
+        actions.push((SocialAction::UpdateStatus, weights.update_status));
+        actions.push((
+            SocialAction::SendMessage(RoomType::DirectMessage),
+            weights.send_dm_message,
+        ));
+        actions
+    }
+
     pub async fn run(&mut self) {
         println!("server: {:#?}", self.config.server);
         println!("simulation config: {:#?}", self.config.simulation);
@@ -149,6 +179,7 @@ impl Simulation {
             user_notifier: user_notification_sender.clone(),
             channels: RwLock::new(HashSet::new()),
             join_to_channels: self.config.feature_flags.channels_to_join.to_vec(),
+            actions_dist: self.build_actions_dist(),
         });
 
         tokio::spawn(Simulation::collect_user_notifications(
