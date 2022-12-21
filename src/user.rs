@@ -13,8 +13,8 @@ use async_channel::Sender;
 use futures::lock::Mutex;
 use matrix_sdk::locks::RwLock;
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId, UserId};
-use rand::distributions::Alphanumeric;
-use rand::prelude::SliceRandom;
+use rand::distributions::{Alphanumeric, WeightedIndex};
+use rand::prelude::{Distribution, SliceRandom};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom;
 use rand::Rng;
@@ -24,10 +24,11 @@ pub struct User {
     pub localpart: String,
     client: Client,
     pub state: State,
+    prepare_actions: Vec<SyncEvent>, // actions to be processed before starting to act
 }
 
-#[derive(Debug)]
-enum SocialAction {
+#[derive(Debug, Clone)]
+pub enum SocialAction {
     AddFriend,
     SendMessage(RoomType),
     LogOut,
@@ -54,7 +55,12 @@ pub enum State {
 }
 
 impl User {
-    pub async fn new(id_number: usize, notifier: SyncEventsSender, config: &Config) -> Self {
+    pub async fn new(
+        id_number: usize,
+        notifier: SyncEventsSender,
+        config: &Config,
+        prepare_actions: Vec<SyncEvent>,
+    ) -> Self {
         let localpart = get_user_id_localpart(id_number, &config.simulation.execution_id);
 
         let client = Client::new(notifier, config).await;
@@ -62,6 +68,7 @@ impl User {
             localpart,
             client,
             state: State::Unregistered,
+            prepare_actions,
         }
     }
 
@@ -279,6 +286,11 @@ impl User {
             ticks_to_live,
         } = &self.state
         {
+            // Before socialize, ensure there are no pending actions
+            if let Some(action) = self.prepare_actions.pop() {
+                self.react(action, context).await;
+                return;
+            }
             self.read_sync_events(events).await;
             let mut events = events.lock().await;
             if let Some(event) = events.pop() {
@@ -293,10 +305,9 @@ impl User {
                     self.log_out(cancel_sync.clone(), &context.user_notifier)
                         .await;
                 } else {
-                    match pick_random_action(
+                    match pick_action(
                         context.config.simulation.probability_to_act,
-                        context.config.feature_flags.channels_load,
-                        context.config.feature_flags.allow_get_channel_members,
+                        &context.actions_dist,
                     ) {
                         SocialAction::SendMessage(message_type) => match message_type {
                             RoomType::DirectMessage => {
@@ -376,9 +387,10 @@ impl User {
             }
             SyncEvent::UnreadRoom(room_id) => self.read_messages(room_id).await,
             SyncEvent::GetChannelMembers(room_id) => {
-                self.get_channel_members(room_id, SocialAction::JoinChannel)
+                self.get_channel_members(room_id, SocialAction::GetChannelMembers)
                     .await
             }
+            SyncEvent::JoinChannel(channel_name) => self.join_channel_alias(channel_name).await,
             _ => {}
         }
     }
@@ -457,6 +469,10 @@ impl User {
         } else {
             log::debug!("user {} has no room to join", self.localpart);
         }
+    }
+
+    async fn join_channel_alias(&self, channel_name: String) {
+        self.client.join_channel(channel_name).await;
     }
 
     async fn pick_channel(&self, context: &Context) -> Option<OwnedRoomId> {
@@ -586,33 +602,12 @@ fn get_user_id_localpart(id_number: usize, execution_id: &str) -> String {
     format!("user_{id_number}_{execution_id}")
 }
 
-// we probably want to distribute these actions and don't make them random (more send messages than logouts)
-fn pick_random_action(
-    probability_to_act: usize,
-    channels_enabled: bool,
-    allow_get_channel_members: bool,
-) -> SocialAction {
+// Picks an action using the distribution defined in the configuration
+fn pick_action(probability_to_act: usize, actions: &[(SocialAction, usize)]) -> SocialAction {
+    let dist = WeightedIndex::new(actions.iter().map(|item| item.1)).unwrap();
     let mut rng = rand::thread_rng();
     if rng.gen_ratio(probability_to_act as u32, 100) {
-        if rng.gen_ratio(1, 75) {
-            SocialAction::LogOut
-        } else if channels_enabled && rng.gen_ratio(1, 70) {
-            SocialAction::LeaveChannel
-        } else if channels_enabled && allow_get_channel_members && rng.gen_ratio(1, 60) {
-            SocialAction::GetChannelMembers
-        } else if channels_enabled && rng.gen_ratio(1, 50) {
-            SocialAction::CreateChannel
-        } else if channels_enabled && rng.gen_ratio(1, 35) {
-            SocialAction::JoinChannel
-        } else if rng.gen_ratio(1, 25) {
-            SocialAction::UpdateStatus
-        } else if rng.gen_ratio(1, 3) {
-            SocialAction::AddFriend
-        } else if channels_enabled && rng.gen_ratio(1, 5) {
-            SocialAction::SendMessage(RoomType::Channel)
-        } else {
-            SocialAction::SendMessage(RoomType::DirectMessage)
-        }
+        actions[dist.sample(&mut rng)].0.clone()
     } else {
         SocialAction::None
     }

@@ -38,7 +38,7 @@ use matrix_sdk::ruma::{
         AnyMessageLikeEventContent,
     },
     presence::PresenceState,
-    OwnedRoomId, OwnedUserId, RoomId, UserId,
+    OwnedRoomId, OwnedUserId, RoomId, RoomOrAliasId, UserId,
 };
 use matrix_sdk::{
     config::{RequestConfig, SyncSettings},
@@ -363,6 +363,22 @@ impl Client {
                 self.notify_sync(SyncEvent::GetChannelMembers(room_id.to_owned()))
                     .await;
             }
+        }
+    }
+
+    pub async fn join_channel(&self, channel_name: String) {
+        let client = &self.inner;
+        let user_homeserver = self.user_id().unwrap().server_name();
+        let channel_alias = format!("#{channel_name}:{user_homeserver}");
+        let room_alias = <&RoomOrAliasId>::try_from(channel_alias.as_str()).unwrap();
+
+        log::debug!("join_channel by alias {}", room_alias);
+        let result = client
+            .join_room_by_id_or_alias(room_alias, &[user_homeserver.into()])
+            .await;
+
+        if let Err(err) = result {
+            log::debug!("Failed to join channel! {:?}", err);
         }
     }
 

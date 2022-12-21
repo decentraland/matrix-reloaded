@@ -15,6 +15,18 @@ channels_per_user = 5
 channels_load = true
 allow_get_channel_members = false
 presence_enabled = false
+channels_to_join = ["help", "test2010"]
+
+[action_weights]
+add_friend = 0
+send_channel_message = 5
+send_dm_message = 0
+log_out = 0
+update_status = 0
+create_channel = 0
+join_channel = 0
+leave_channel = 0
+get_channel_members = 0
 
 [requests]
 retry_enabled = true

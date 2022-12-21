@@ -56,6 +56,7 @@ pub enum SyncEvent {
     MessageReceived(OwnedRoomId, String, RoomType),
     ChannelCreated(OwnedRoomId),
     GetChannelMembers(OwnedRoomId),
+    JoinChannel(String),
 }
 
 #[derive(Default)]

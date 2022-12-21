@@ -94,6 +94,7 @@ pub struct Config {
     pub simulation: Simulation,
     pub requests: Requests,
     pub feature_flags: FeatureFlags,
+    pub action_weights: ActionWeights,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -101,6 +102,20 @@ pub struct FeatureFlags {
     pub channels_load: bool,
     pub allow_get_channel_members: bool,
     pub presence_enabled: bool,
+    pub channels_to_join: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ActionWeights {
+    pub add_friend: usize,
+    pub send_channel_message: usize,
+    pub send_dm_message: usize,
+    pub log_out: usize,
+    pub update_status: usize,
+    pub create_channel: usize,
+    pub join_channel: usize,
+    pub leave_channel: usize,
+    pub get_channel_members: usize,
 }
 
 impl Config {
@@ -128,6 +143,7 @@ impl Config {
             .set_default("feature_flags.channels_load", true)?
             .set_default("feature_flags.allow_get_channel_members", false)?
             .set_default("feature_flags.presence_enabled", true)?
+            .set_default::<&str, Vec<String>>("feature_flags.channels_to_join", vec![])?
             .build()?;
 
         log::debug!("Config: {:#?}", config);
